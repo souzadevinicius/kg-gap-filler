@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES6",
+    "module": "NodeNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "moduleResolution": "nodenext",  // ← Critical fix
+    "types": ["obsidian"],            // ← Add this if you're using TypeScript with type declarations
+    "baseUrl": ".",
+    "paths": {
+      "obsidian/*": ["node_modules/obsidian/*"]  // ← Ensures correct resolution of types
+    }
+  },
+  "include": ["src/**/*"]
+}

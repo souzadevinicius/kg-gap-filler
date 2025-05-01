@@ -1,6 +1,6 @@
 // graphAnalyser.ts (fixed version)
 import * as d3 from 'd3';
-
+import { Notice } from 'obsidian';
 // Define Note interface if not already in separate file
 export interface Note {
   id: string;
@@ -9,6 +9,8 @@ export interface Note {
   y?: number;
   fx?: number | null;
   fy?: number | null;
+  isBridge?: boolean; // <-- Added isBridge property
+  wikiUrl?: string;   // <-- Added wikiUrl property
 }
 
 type D3Link = d3.SimulationLinkDatum<Note>;
@@ -23,7 +25,8 @@ export class GraphViewer {
   constructor(containerId: string) {
     const container = document.getElementById(containerId);
     if (!container) {
-      throw new Error(`Container with ID "${containerId}" not found.`);
+        new Notice("Graph container not found in DOM!");
+        return;
     }
     this.container = container;
 
@@ -80,6 +83,41 @@ export class GraphViewer {
       throw new Error("Container is not set.");
     }
 
+    // Remove any previous SVGs
+    this.container.innerHTML = '';
+
+    // Create SVG that fills the container
+    const svg = d3.select(this.container)
+      .append('svg')
+      .attr('width', '100%')
+      .attr('height', '100%')
+      .attr('viewBox', `0 0 ${this.width} ${this.height}`)
+      .style('display', 'block');
+
+    // Add arrowhead marker definition to the SVG
+    svg.append("defs").append("marker")
+      .attr("id", "arrowhead")
+      .attr("viewBox", "0 -5 10 10")
+      .attr("refX", 32)
+      .attr("refY", 0)
+      .attr("markerWidth", 8)
+      .attr("markerHeight", 8)
+      .attr("orient", "auto")
+      .append("path")
+      .attr("d", "M0,-5L10,0L0,5")
+      .attr("fill", "#888");
+
+    const g = svg.append("g");
+    this.svg = g;
+
+    svg.call(
+      d3.zoom<SVGSVGElement, unknown>()
+        .scaleExtent([0.1, 4])
+        .on("zoom", (event) => {
+          g.attr("transform", event.transform);
+        })
+    );
+
     // Assign random initial positions within the SVG area
     notes.forEach(n => {
       n.x = this.width * (0.2 + 0.6 * Math.random());
@@ -129,10 +167,25 @@ export class GraphViewer {
       .enter()
       .append("circle")
       .attr("r", 24)
-      .attr("fill", "var(--interactive-accent)")
+      .attr("fill", d => d.isBridge ? "#FFD700" : "var(--interactive-accent)") // gold for bridge nodes
       .attr("stroke", "var(--background-primary)")
       .attr("stroke-width", 2)
       .attr("cursor", "grab")
+      .on("mouseover", (event, d) => {
+          if (d.isBridge && d.wikiUrl) {
+              showWikiModal(d.title, d.wikiUrl);
+          }
+      })
+      .on("mouseout", (event, d) => {
+          if (d.isBridge && d.wikiUrl) {
+              hideWikiModal();
+          }
+      })
+      .on("click", (event, d) => {
+          if (d.isBridge && d.wikiUrl) {
+              window.open(d.wikiUrl, "_blank");
+          }
+      })
       .call(
         d3.drag<SVGCircleElement, Note>()
           .on("start", (event, d) => {
@@ -164,6 +217,71 @@ export class GraphViewer {
       .attr("dx", 28)
       .attr("dy", "0.35em");
   }
+
+  public addNode(newNode: Note, newLinks: string[][]) {
+    // Add the new node to the simulation
+    if (!this.simulation) return;
+    const nodes = this.simulation.nodes();
+    nodes.push(newNode);
+
+    // Add the new links to the simulation
+    const links = (this.simulation.force("link") as d3.ForceLink<Note, D3Link>).links();
+    newLinks.forEach(([source, target]) => {
+        links.push({ source, target } as D3Link);
+    });
+
+    // Update the simulation
+    this.simulation.nodes(nodes);
+    (this.simulation.force("link") as d3.ForceLink<Note, D3Link>).links(links);
+    this.simulation.alpha(1).restart();
+
+    // Update the D3 elements (nodes and links)
+    // (You may need to refactor your drawGraph to support incremental updates)
+    // For a minimal update:
+    this.updateGraphElements(nodes, links);
+}
+
+// Helper to update D3 elements (nodes and links)
+private updateGraphElements(nodes: Note[], links: D3Link[]) {
+    // Update links
+    const linkSel = this.svg.select("g.links")
+        .selectAll("line")
+        .data(links, (d: any) => `${d.source}-${d.target}`);
+
+    linkSel.enter()
+        .append("line")
+        .attr("stroke", "var(--text-muted)")
+        .attr("stroke-width", 1)
+        .attr("marker-end", "url(#arrowhead)");
+
+    // Update nodes
+    const nodeSel = this.svg.select("g.nodes")
+        .selectAll("circle")
+        .data(nodes, (d: any) => d.id);
+
+    nodeSel.enter()
+        .append("circle")
+        .attr("r", 24)
+        .attr("fill", d => d.isBridge ? "#FFD700" : "var(--interactive-accent)")
+        .attr("stroke", "var(--background-primary)")
+        .attr("stroke-width", 2)
+        .attr("cursor", "grab")
+        .on("mouseover", (event, d) => {
+            if (d.isBridge && d.wikiUrl) {
+                showWikiModal(d.title, d.wikiUrl);
+            }
+        })
+        .on("mouseout", (event, d) => {
+            if (d.isBridge && d.wikiUrl) {
+                hideWikiModal();
+            }
+        })
+        .on("click", (event, d) => {
+            if (d.isBridge && d.wikiUrl) {
+                window.open(d.wikiUrl, "_blank");
+            }
+        });
+}
 
   private tick() {
     // Update nodes
@@ -204,3 +322,33 @@ export class GraphViewer {
     }
   }
 }
+
+// Add to a suitable place in your codebase
+
+function showWikiModal(title: string, url: string) {
+    let modal = document.getElementById('wiki-modal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'wiki-modal';
+        modal.style.position = 'fixed';
+        modal.style.top = '10%';
+        modal.style.left = '50%';
+        modal.style.transform = 'translateX(-50%)';
+        modal.style.background = 'white';
+        modal.style.border = '1px solid #ccc';
+        modal.style.padding = '1em';
+        modal.style.zIndex = '9999';
+        modal.style.maxWidth = '600px';
+        modal.style.maxHeight = '60vh';
+        modal.style.overflow = 'auto';
+        document.body.appendChild(modal);
+    }
+    modal.innerHTML = `<b>${title}</b><br><iframe src="${url}" width="560" height="315" style="border:none;width:100%;height:50vh;"></iframe>`;
+    modal.style.display = 'block';
+}
+
+function hideWikiModal() {
+    const modal = document.getElementById('wiki-modal');
+    if (modal) modal.style.display = 'none';
+}
+

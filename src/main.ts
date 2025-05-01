@@ -5,82 +5,111 @@ import { GapDetector } from './gapDetector';
 import { LLMClient } from './lmmClient';
 import { GraphViewer } from './graphViewer';
 import { Note } from './graphAnalyser';
-import { Plugin, TFile, Notice } from 'obsidian';
+import { Plugin, TFile, Notice, MarkdownView, App, PluginSettingTab, Setting } from 'obsidian';
+
+interface GapFillerSettings {
+    similarityThreshold: number;
+}
+
+const DEFAULT_SETTINGS: GapFillerSettings = {
+    similarityThreshold: 0.6,
+};
 
 export default class KGGapFiller extends Plugin {
+    settings!: GapFillerSettings;
     private analyser!: GraphAnalyser;
     private detector!: GapDetector;
     private llmClient!: LLMClient;
     private viewer!: GraphViewer;
-
+    private container!: HTMLElement;
     private embeddingsCache: Record<string, number[]> = {};
+    private latestFile?: Note;
+
+    // Helper: robustly get the last active Markdown file
+    private getCurrentMarkdownFile(app: App): TFile | null {
+        const leaf = app.workspace.getMostRecentLeaf();
+        if (leaf && leaf.view instanceof MarkdownView) {
+            return leaf.view.file;
+        }
+        return app.workspace.getActiveFile(); // Reset if no valid file found
+    }
 
     async onload() {
         console.log('KGGapFiller plugin loaded');
         this.analyser = new GraphAnalyser();
         this.detector = new GapDetector();
         this.llmClient = new LLMClient('http://localhost:1234/v1/chat/completions');
+        this.viewer = new GraphViewer("graph-container");
+        this.container = await this.createContainer();
+        this.viewer.setContainer(this.container);
         this.addRibbonIcon('dot-network', 'Show D3 Graph', async () => {
-            // Container handling
-            let container = document.getElementById('graph-container');
-            if (!container) {
-                container = document.createElement('div');
-                container.id = 'graph-container';
-                container.style.height = '100%';
-                container.style.width = '100%';
-                container.createEl('div', { attr: { id: 'd3-graph-container' } });
-            }
-            container.innerHTML = ''; // Clear previous content
+            // Remove any previous container from the DOM (cleanup)
+            const old = document.getElementById('graph-container');
+            if (old && old.parentElement) old.parentElement.removeChild(old);
 
-            // Leaf handling
-            const leaf = this.app.workspace.getRightLeaf(false);
-            if (leaf) {
-                await leaf.setViewState({ type: "empty", active: true });
-                leaf.view.containerEl.empty(); // Clear previous content
+            // Create a fresh container
+            const container = this.createContainer();
+
+            // Try to find an existing right leaf with our container
+            let leaf = this.app.workspace.getRightLeaf(false);
+            let found = false;
+            if (leaf && leaf.view.containerEl.querySelector('#graph-container')) {
+                // Already open, just update content
+                leaf.view.containerEl.empty();
                 leaf.view.containerEl.appendChild(container);
-            } else {
-                // Fallback handling
-                document.body.appendChild(container);
-                console.warn('Using body container as fallback');
+                found = true;
             }
 
-            // Initialize viewer AFTER DOM insertion
-            this.viewer = new GraphViewer("graph-container");
+            if (!found) {
+                // Attach to the right pane, or fallback to body
+                if (leaf) {
+                    await leaf.setViewState({ type: "empty", active: true });
+                    leaf.view.containerEl.empty();
+                    leaf.view.containerEl.appendChild(container);
+                } else {
+                    document.body.appendChild(container);
+                    console.warn('Using body container as fallback');
+                }
+            }
+
+            // Set the container for the viewer
             this.viewer.setContainer(container);
 
-            // Get the currently active file
-            const activeLeaf = this.app.workspace.getActiveFile();
-            if (!activeLeaf) {
-                new Notice("No active file found.");
+            // Get the currently active file robustly
+            const activeFile = this.getCurrentMarkdownFile(this.app);
+            if (!activeFile) {
+                new Notice("No active file found. Please focus a note and try again.");
                 return;
             }
 
             // Run analysis only for the current file
-            await this.run([activeLeaf]);
+            await this.run(activeFile, 1);
         });
 
         this.addCommand({
             id: 'fill-gap-bridges',
             name: 'Fill Gaps Using Bridges',
-            callback: () => this.fillBridgesForCurrentFile()
-        });
-
-        this.addRibbonIcon('link', 'Fill Gaps Using Bridges', async () => {
-            await this.fillBridgesForCurrentFile();
+            callback: () => this.run(this.getCurrentMarkdownFile(this.app))
         });
 
         // Watch for new or modified markdown files and update the graph if the container is visible
         this.registerEvent(
             this.app.vault.on('create', async (file) => {
                 if (file instanceof TFile && file.extension === 'md') {
-                    await this.updateGraphForCurrentFile();
+                    await this.run(this.getCurrentMarkdownFile(this.app));
                 }
             })
         );
         this.registerEvent(
+            this.app.workspace.on('file-open', async (file) => {
+                await this.run(this.getCurrentMarkdownFile(this.app));
+            })
+        );
+
+        this.registerEvent(
             this.app.vault.on('modify', async (file) => {
                 if (file instanceof TFile && file.extension === 'md') {
-                    await this.updateGraphForCurrentFile();
+                    await this.run(this.getCurrentMarkdownFile(this.app));
                 }
             })
         );
@@ -90,14 +119,40 @@ export default class KGGapFiller extends Plugin {
             name: 'Reindex Note Embeddings',
             callback: () => this.reindexEmbeddings()
         });
+
+        // Add settings tab
+        this.addSettingTab(new GapFillerSettingTab(this.app, this));
+
+        await this.loadSettings();
     }
 
-    public async run(files: TFile[]): Promise<void> {
-        if (!this.viewer){
+    async loadSettings() {
+        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    }
+
+    async saveSettings() {
+        await this.saveData(this.settings);
+    }
+
+    private createContainer(): HTMLElement {
+        // Always create a new div for the container
+        const container = document.createElement('div');
+        container.id = 'graph-container';
+        container.style.height = '100%';
+        container.style.width = '100%';
+        container.createEl('div', { attr: { id: 'd3-graph-container' } });
+        return container;
+    }
+
+    public async run(file: TFile | null, depth: number = 1, useEmbeddings: boolean = true): Promise<void> {
+        if (!file) {
+            new Notice("No active file found.");
             return;
         }
-        if (!files.length) return;
 
+
+        // Build notes array as before
+        const files = this.app.vault.getMarkdownFiles();
         const notes: Note[] = [];
         for (const file of files) {
             const content = await this.app.vault.read(file);
@@ -110,20 +165,167 @@ export default class KGGapFiller extends Plugin {
             });
         }
 
-        const links = this.buildLinks(notes);
-        this.viewer.drawGraph(notes, links);
-
-        const gaps = this.detector.analyseGraph(notes);
-        console.log('Generated content:', gaps);
-
-        // Only analyze and fill gaps for the current file
-        for (const gap of gaps) {
-            const note = notes.find(note => note.id === gap)!;
-            const generatedContent = await this.llmClient.generateContent(
-                `Based on the content of ${note.title}, generate a new section that fills knowledge gaps related to: ${gap}`
-            );
-            await this.llmClient.fillGap(generatedContent, this.app.vault, note.file, note.content);
+        const activeNote = notes.find(n => n.file && file && n.file.path === file.path);
+        if (this.latestFile && this.latestFile.id === activeNote?.id) {
+            return;
         }
+
+
+        this.embeddingsCache = await this.loadEmbeddingsFromFile();
+
+        // Find the active note
+        if (!activeNote) {
+            new Notice("Active note not found in notes array.");
+            return;
+        }
+
+        let shallowNotes: Note[] = [];
+        let shallowLinks: string[][] = [];
+
+        if (useEmbeddings) {
+            // Use embeddings to build connections
+            this.embeddingsCache = await this.loadEmbeddingsFromFile();
+            // Find the active note
+            const activeNote = notes.find(n => n.file && file && n.file.path === file.path);
+            if (!activeNote) {
+                new Notice("Active note not found in notes array.");
+                return;
+            }
+            // Collect nodes up to the given depth using semantic similarity
+            let currentLevel = new Set<string>([activeNote.id]);
+            let allIncluded = new Set<string>([activeNote.id]);
+            for (let d = 0; d < depth; d++) {
+                const nextLevel = new Set<string>();
+                for (const id of currentLevel) {
+                    const embA = this.embeddingsCache[id];
+                    if (!embA) continue;
+                    for (const n of notes) {
+                        if (allIncluded.has(n.id)) continue;
+                        const embB = this.embeddingsCache[n.id];
+                        if (!embB) continue;
+                        // Use a similarity threshold (e.g., 0.75)
+                        const sim = this.detector.cosineSimilarity(embA, embB);
+                        if (sim >= this.settings.similarityThreshold) {
+                            nextLevel.add(n.id);
+                        }
+                    }
+                }
+                nextLevel.forEach(id => allIncluded.add(id));
+                currentLevel = nextLevel;
+            }
+            shallowNotes = notes.filter(n => allIncluded.has(n.id));
+            // Build links based on semantic similarity
+            shallowLinks = [];
+            for (const a of shallowNotes) {
+                for (const b of shallowNotes) {
+                    if (a.id !== b.id) {
+                        const embA = this.embeddingsCache[a.id];
+                        const embB = this.embeddingsCache[b.id];
+                        if (embA && embB && this.detector.cosineSimilarity(embA, embB) >= 0.75) {
+                            shallowLinks.push([a.id, b.id]);
+                        }
+                    }
+                }
+            }
+        } else {
+            // Use concrete links as before
+            const activeNote = notes.find(n => n.file && file && n.file.path === file.path);
+            if (!activeNote) {
+                new Notice("Active note not found in notes array.");
+                return;
+            }
+            let currentLevel = new Set<string>([activeNote.id]);
+            let allIncluded = new Set<string>([activeNote.id]);
+            for (let d = 0; d < depth; d++) {
+                const nextLevel = new Set<string>();
+                for (const id of currentLevel) {
+                    const node = notes.find(n => n.id === id);
+                    if (!node) continue;
+                    // Outgoing
+                    node.links.forEach(l => {
+                        if (!allIncluded.has(l)) nextLevel.add(l);
+                    });
+                    // Incoming
+                    notes.forEach(n => {
+                        if (n.links && n.links.includes(node.title) && !allIncluded.has(n.id)) {
+                            nextLevel.add(n.id);
+                        }
+                    });
+                }
+                nextLevel.forEach(id => allIncluded.add(id));
+                currentLevel = nextLevel;
+            }
+            shallowNotes = notes.filter(n => allIncluded.has(n.id) || (n.isBridge && n.links.some(l => allIncluded.has(l))));
+            shallowLinks = this.buildLinks(shallowNotes);
+        }
+
+
+        // For a single file, you may want to analyze the whole vault for clusters
+        const clusters = this.detector.clusterByEmbeddingsCache(shallowNotes, this.embeddingsCache, 0.75);
+        console.log(`Clusters found: ${clusters.length}`);
+        console.log(`shallowNotes found: ${shallowNotes.length}`);
+        console.log(`shallowLinks found: ${shallowLinks.length}`);
+        // this.detector.analyseGraph(notes); // Build the graph
+        this.viewer.drawGraph(shallowNotes, shallowLinks);
+        const topicsSearched : string[] = [];
+        this.latestFile = activeNote
+        if (clusters.length > 1) {
+            for (let i = 0; i < clusters.length; i++) {
+                for (let j = i + 1; j < clusters.length; j++) {
+                    const clusterA = clusters[i].map(id => notes.find(n => n.id === id)?.title).filter(Boolean).join(', ');
+                    const clusterB = clusters[j].map(id => notes.find(n => n.id === id)?.title).filter(Boolean).join(', ');
+
+                    // Pick representative notes from each cluster (first note in each cluster)
+                    const repA = notes.find(n => n.id === clusters[i][0]);
+                    const repB = notes.find(n => n.id === clusters[j][0]);
+
+                    if (clusterA.length > 0 && clusterB.length > 0 && repA && repB) {
+                        if (topicsSearched.includes(clusterA) && topicsSearched.includes(clusterB)) {
+                            continue;
+                        }
+                        topicsSearched.push(clusterA, clusterB);
+                        const prompt = `Given the topics: [${clusterA}] and [${clusterB}], suggest the two (and only two) most relevant topics, or entity that could serve as a bridge between these two clusters.
+                        Return ONLY the bridge topic as the first line, a one-sentence summary as the second line, and a Wikipedia URL about that topic as the third line.
+                        If no meaningful bridge exists, reply with "NO BRIDGE".`;
+
+                        const bridge = await this.llmClient.generateContent(prompt);
+
+                        // Parse the LLM response
+                        let [bridgeTopic, bridgeSummary, wikiUrl] = bridge.trim().split('\n').map(s => s.trim());
+
+                        if (
+                            bridgeTopic &&
+                            bridgeTopic.toUpperCase() !== "NO BRIDGE" &&
+                            bridgeTopic.length > 3 &&
+                            wikiUrl && wikiUrl.includes("http")
+                        ) {
+                            wikiUrl = `https://${wikiUrl.split("//")[1]}`;
+                            shallowNotes.push({
+                                id: bridgeTopic,
+                                title: bridgeTopic.replace(/\*\*Bridge Topic:\*\*/g, ' '),
+                                file: repA.file, // Use repA's file as a placeholder
+                                content: bridgeSummary,
+                                links: [repA.title, repB.title].filter(Boolean),
+                                isBridge: true,
+                                wikiUrl,
+                                summary: bridgeSummary
+                            });
+                            console.log(wikiUrl)
+                            shallowLinks = this.buildLinks(shallowNotes);
+                            this.viewer.drawGraph(shallowNotes, shallowLinks);
+                        }
+                    } else {
+                        new Notice(`Empty cluster found, skipping. {clusterA: ${clusterA}, clusterB: ${clusterB}}`);
+                    }
+
+                    console.log(`$clusters found: ${clusterA}, ${clusterB}`);
+                    new Notice("Bridge notes created (if any meaningful bridges were found).");
+                }
+            }
+        } else {
+            new Notice("No clusters found or only one cluster present.");
+        }
+
     }
 
     private buildLinks(notes: Note[]): string[][] {
@@ -137,121 +339,6 @@ export default class KGGapFiller extends Plugin {
             }
         }
         return links;
-    }
-
-    // Helper method to update the graph for the currently active file
-    private async updateGraphForCurrentFile() {
-        const activeFile = this.app.workspace.getActiveFile();
-        if (!activeFile) return;
-
-        // Only update if the graph-container is present (i.e., user is viewing the graph)
-        const container = document.getElementById('graph-container');
-        if (container) {
-            await this.run([activeFile]);
-        }
-    }
-
-    private async fillBridgesForCurrentFile() {
-        const activeFile = this.app.workspace.getActiveFile();
-        if (!activeFile) {
-            new Notice("No active file found.");
-            return;
-        }
-
-        // Read content and extract links for the current file
-        const content = await this.app.vault.read(activeFile);
-        const note: Note = {
-            id: activeFile.basename,
-            title: activeFile.basename,
-            file: activeFile,
-            content,
-            links: this.analyser['extractLinks'](content)
-        };
-
-        // For a single file, you may want to analyze the whole vault for clusters
-        // If you want to analyze all notes, uncomment the following:
-        // const files = this.app.vault.getMarkdownFiles();
-        // const notes: Note[] = [];
-        // for (const file of files) {
-        //     const content = await this.app.vault.read(file);
-        //     notes.push({
-        //         id: file.basename,
-        //         title: file.basename,
-        //         file: file,
-        //         content,
-        //         links: this.analyser['extractLinks'](content)
-        //     });
-        // }
-        const files = this.app.vault.getMarkdownFiles();
-        const notes: Note[] = [];
-        for (const file of files) {
-            const content = await this.app.vault.read(file);
-            notes.push({
-                id: file.basename,
-                title: file.basename,
-                file: file,
-                content,
-                links: this.analyser['extractLinks'](content)
-            });
-        }
-        this.embeddingsCache = await this.loadEmbeddingsFromFile();
-        const clusters = this.detector.clusterByEmbeddingsCache(notes, this.embeddingsCache, 0.75);
-
-        // For demo, let's just use the current note (single node = single cluster)
-        // const notes = [note];
-
-        // Build the graph and find clusters
-        this.detector.analyseGraph(notes); // Build the graph
-        // const clusters = this.detector.findClusters?.() || []; // Make sure findClusters exists
-        // const clusters = await this.detector.clusterByEmbeddings(notes, this.llmClient, 0.5);
-        if (clusters.length > 1) {
-            for (let i = 0; i < clusters.length; i++) {
-                for (let j = i + 1; j < clusters.length; j++) {
-                    const clusterA = clusters[i].map(id => notes.find(n => n.id === id)?.title).filter(Boolean).join(', ');
-                    const clusterB = clusters[j].map(id => notes.find(n => n.id === id)?.title).filter(Boolean).join(', ');
-                    if (clusterA.length > 0 && clusterB.length > 0) {
-                        const prompt = `Given the topics: [${clusterA}] and [${clusterB}], suggest a concept, topic, or entity that could serve as a bridge between these two clusters. Return ONLY the bridge topic as the first line, then a summary. If no meaningful bridge exists, reply with "NO BRIDGE".`;
-
-                        const bridge = await this.llmClient.generateContent(prompt);
-
-                        // Parse the LLM response
-                        const [firstLine, ...rest] = bridge.trim().split('\n');
-                        const bridgeTopic = firstLine.trim();
-                        const bridgeSummary = rest.join('\n').trim();
-
-                        if (
-                            bridgeTopic &&
-                            bridgeTopic.toUpperCase() !== "NO BRIDGE" &&
-                            bridgeTopic.length > 3
-                        ) {
-                            const repA = notes.find(n => n.id === clusters[i][0]);
-                            const repB = notes.find(n => n.id === clusters[j][0]);
-                            const bridgeContent =
-                            `#aigenerated\n\n${bridgeSummary}\n\n` +
-                            (repA ? `[[${repA.title}]]\n` : '') +
-                            (repB ? `[[${repB.title}]]\n` : '');
-
-                            let safeFileName = bridgeTopic
-                            .replace(/^[\s_\-]*bridge[\s_\-]*topic[\s:_\-]*?/i, "") // Remove any leading underscores/spaces/hyphens and "bridge topic"
-                            .replace(/[\\/:*?"<>|]/g, "_") // Sanitize special characters
-                            .replace(/_+/g, "_")           // Collapse multiple underscores
-                            safeFileName =  safeFileName.replace(/^[\s_\-]*bridge[\s_\-]*topic[\s:_\-]*?/i, "") // Remove any leading underscores/spaces/hyphens and "bridge topic"
-                            .replace(/[\\/:*?"<>|]/g, "_") // Sanitize special characters
-                            .replace(/_+/g, "")           // Collapse multiple underscores
-                            .trim() + ".md";
-                            await this.app.vault.create(safeFileName, bridgeContent);
-
-                        }
-                    }else{
-                        new Notice(`Empty cluster found, skipping. {clusterA: ${clusterA}, clusterB: ${clusterB}`);
-                    }
-                    console.log(`$clusters found: ${clusterA}, ${clusterB}`);
-                    new Notice("Bridge notes created (if any meaningful bridges were found).");
-                }
-            }
-        } else {
-            new Notice("No clusters found or only one cluster present.");
-        }
     }
 
     public async reindexEmbeddings() {
@@ -288,5 +375,32 @@ export default class KGGapFiller extends Plugin {
         } catch {
             return {};
         }
+    }
+}
+
+class GapFillerSettingTab extends PluginSettingTab {
+    plugin: KGGapFiller;
+
+    constructor(app: App, plugin: KGGapFiller) {
+        super(app, plugin);
+        this.plugin = plugin;
+    }
+
+    display(): void {
+        const { containerEl } = this;
+        containerEl.empty();
+
+        new Setting(containerEl)
+            .setName('Similarity Threshold')
+            .setDesc('Minimum cosine similarity for semantic connections (0.0 - 1.0)')
+            .addSlider(slider => slider
+                .setLimits(0, 1, 0.01)
+                .setValue(this.plugin.settings.similarityThreshold)
+                .onChange(async (value) => {
+                    this.plugin.settings.similarityThreshold = value;
+                    await this.plugin.saveSettings();
+                })
+                .setDynamicTooltip()
+            );
     }
 }

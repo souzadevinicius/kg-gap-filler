@@ -2,15 +2,41 @@
 // import * as path from 'path';
 import { TFile } from 'obsidian';
 export interface Note extends d3.SimulationNodeDatum {
-  id: string;                 // File name or unique identifier
-  title: string;
-  content: string;
-  links: string[];
-  file:  TFile,          // Notes this one links to
-  x?: number;
-  y?: number;
-  fx?: number | null;
-  fy?: number | null;
+/**
+* Node’s zero-based index into nodes array. This property is set during the initialization process of a simulation.
+*/
+index?: number | undefined;
+/**
+* Node’s current x-position
+*/
+x?: number | undefined;
+/**
+* Node’s current y-position
+*/
+y?: number | undefined;
+/**
+* Node’s current x-velocity
+*/
+vx?: number | undefined;
+/**
+* Node’s current y-velocity
+*/
+vy?: number | undefined;
+/**
+* Node’s fixed x-position (if position was fixed)
+*/
+fx?: number | null | undefined;
+/**
+* Node’s fixed y-position (if position was fixed)
+*/
+id: string;
+title: string;
+content: string;
+links: string[];
+file:  TFile,
+isBridge?: boolean;
+wikiUrl?: string;
+summary?: string;
 }
 
 export class GraphAnalyser {

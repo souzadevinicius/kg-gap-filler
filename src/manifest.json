@@ -3,7 +3,11 @@
   "name": "KG Gap Filler",
   "version": "1.0.0",
   "description": "A sample Obsidian plugin for gap filling",
-  "main": "dist/main.js",
+  "main": "src/main.ts",
+  "dependencies": ["d3"],
+  "assets": {
+    "graph-container": "<div id=\"graph-container\" style=\"width:100%; height:500px; border:1px solid #ccc;\"></div>"
+  },
   "author": "Vinicius de Souza",
   "license": "MIT"
 }

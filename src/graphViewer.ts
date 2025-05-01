@@ -1,145 +1,206 @@
-// graphAnalyser.ts (updated)
-// Add this at the top of your existing file
+// graphAnalyser.ts (fixed version)
 import * as d3 from 'd3';
-import { Note } from './graphAnalyser';
+
+// Define Note interface if not already in separate file
+export interface Note {
+  id: string;
+  title: string;
+  x?: number;
+  y?: number;
+  fx?: number | null;
+  fy?: number | null;
+}
 
 type D3Link = d3.SimulationLinkDatum<Note>;
 
 export class GraphViewer {
   private svg: d3.Selection<SVGGElement, unknown, null, undefined>;
-  private graphContainer: HTMLElement;
   private simulation: d3.Simulation<Note, D3Link> | undefined;
+  private container: HTMLElement | null = null;
+  private width: number = 0;
+  private height: number = 0;
 
   constructor(containerId: string) {
     const container = document.getElementById(containerId);
     if (!container) {
       throw new Error(`Container with ID "${containerId}" not found.`);
     }
-    this.graphContainer = container;
+    this.container = container;
 
-    const svg = d3.select(this.graphContainer)
-      .append("svg")
-      .attr("width", "100%")
-      .attr("height", "100%");
+    // Make container fill parent
+    this.container.style.width = "100%";
+    this.container.style.height = "100%";
+    this.width = this.container.offsetWidth || 800;
+    this.height = this.container.offsetHeight || 600;
+
+    // Remove any previous SVGs
+    this.container.innerHTML = '';
+
+    // Create SVG that fills the container
+    const svg = d3.select(this.container)
+      .append('svg')
+      .attr('width', '100%')
+      .attr('height', '100%')
+      .attr('viewBox', `0 0 ${this.width} ${this.height}`)
+      .style('display', 'block');
+
+    // Add arrowhead marker definition to the SVG
+    svg.append("defs").append("marker")
+      .attr("id", "arrowhead")
+      .attr("viewBox", "0 -5 10 10")
+      .attr("refX", 32) // Should be >= node radius
+      .attr("refY", 0)
+      .attr("markerWidth", 8)
+      .attr("markerHeight", 8)
+      .attr("orient", "auto")
+      .append("path")
+      .attr("d", "M0,-5L10,0L0,5")
+      .attr("fill", "#888"); // Use a visible color for testing
 
     const g = svg.append("g");
+    this.svg = g;
 
     svg.call(
       d3.zoom<SVGSVGElement, unknown>()
+        .scaleExtent([0.1, 4])
         .on("zoom", (event) => {
           g.attr("transform", event.transform);
         })
     );
+  }
 
-    this.svg = g;
+  public setContainer(container: HTMLElement) {
+    this.container = container;
+    this.width = container.offsetWidth || 800;
+    this.height = container.offsetHeight || 600;
   }
 
   public drawGraph(notes: Note[], links: string[][]) {
-    const width = this.graphContainer.clientWidth;
-    const height = this.graphContainer.clientHeight;
-
-    // Convert links to D3 format
-    const d3Links: D3Link[] = links.map(link => ({
-      source: link[0],
-      target: link[1]
-    }));
-
-    // Clear previous simulation if exists
-    if (this.simulation) {
-      this.simulation.stop();
-      this.svg.selectAll("*").remove();
+    if (!this.container) {
+      throw new Error("Container is not set.");
     }
 
-    // Force simulation setup
+    // Assign random initial positions within the SVG area
+    notes.forEach(n => {
+      n.x = this.width * (0.2 + 0.6 * Math.random());
+      n.y = this.height * (0.2 + 0.6 * Math.random());
+    });
+
+    // Convert links to D3 format with object references
+    const d3Links: D3Link[] = links.map(link => ({
+      source: notes.find(n => n.id === link[0])!,
+      target: notes.find(n => n.id === link[1])!
+    }));
+
+    // Clear previous
+    if (this.simulation) {
+      this.simulation.stop();
+    }
+    this.svg.selectAll("*").remove();
+
+    // Force simulation
     this.simulation = d3.forceSimulation<Note>(notes)
       .force("link", d3.forceLink<Note, D3Link>(d3Links)
         .id(d => d.id)
-        .distance(100)
+        .distance(150)
       )
-      .force("charge", d3.forceManyBody<Note>().strength(-400))
-      .force("center", d3.forceCenter(width / 2, height / 2))
+      .force("charge", d3.forceManyBody().strength(-400))
+      .force("center", d3.forceCenter(this.width / 2, this.height / 2))
+      .force("collide", d3.forceCollide(40))
+      .alpha(1) // Start with full energy
       .on("tick", () => this.tick());
 
-    // Create links
+    // Links
     const link = this.svg.append("g")
-      .attr("stroke", "#999")
-      .attr("stroke-width", 1)
+      .attr("class", "links")
       .selectAll("line")
       .data(d3Links)
       .enter()
       .append("line")
-      .attr("stroke", "#999");
-
-    // Create nodes
-    const node = this.svg.append("g")
-      .attr("stroke", "#fff")
+      .attr("stroke", "var(--text-muted)")
       .attr("stroke-width", 1.5)
+      .attr("marker-end", "url(#arrowhead)"); // <-- This must match the marker id
+
+    // Nodes
+    const node = this.svg.append("g")
+      .attr("class", "nodes")
       .selectAll("circle")
       .data(notes)
       .enter()
       .append("circle")
-      .attr("r", 20)
-      .attr("fill", "steelblue")
-      .attr("id", d => d.id);
+      .attr("r", 24)
+      .attr("fill", "var(--interactive-accent)")
+      .attr("stroke", "var(--background-primary)")
+      .attr("stroke-width", 2)
+      .attr("cursor", "grab")
+      .call(
+        d3.drag<SVGCircleElement, Note>()
+          .on("start", (event, d) => {
+            if (!event.active && this.simulation) this.simulation.alphaTarget(0.3).restart();
+            d.fx = d.x;
+            d.fy = d.y;
+          })
+          .on("drag", (event, d) => {
+            d.fx = event.x;
+            d.fy = event.y;
+          })
+          .on("end", (event, d) => {
+            if (!event.active && this.simulation) this.simulation.alphaTarget(0);
+            d.fx = null;
+            d.fy = null;
+          })
+      );
 
-    // Create labels
+    // Labels
     const label = this.svg.append("g")
-      .attr("font-size", 12)
+      .attr("class", "labels")
       .selectAll("text")
       .data(notes)
       .enter()
       .append("text")
       .text(d => d.title)
+      .attr("font-size", "14px")
+      .attr("fill", "var(--text-normal)")
+      .attr("dx", 28)
       .attr("dy", "0.35em");
-
-    // Drag functionality
-    const drag = d3.drag<SVGCircleElement, Note>()
-      .on("start", (event) => {
-        if (!event.active && this.simulation) this.simulation.alphaTarget(0.3).restart();
-        event.subject.fx = event.subject.x;
-        event.subject.fy = event.subject.y;
-      })
-      .on("drag", (event) => {
-        event.subject.fx = event.x;
-        event.subject.fy = event.y;
-      })
-      .on("end", (event) => {
-        if (!event.active && this.simulation) this.simulation.alphaTarget(0);
-        event.subject.fx = null;
-        event.subject.fy = null;
-      });
-
-    node.call(drag);
   }
 
   private tick() {
     // Update nodes
-    this.svg.selectAll<SVGCircleElement, Note>("circle")
+    this.svg.selectAll<SVGCircleElement, Note>("g.nodes circle")
       .attr("cx", d => d.x!)
       .attr("cy", d => d.y!);
 
     // Update labels
-    this.svg.selectAll<SVGTextElement, Note>("text")
-      .attr("x", d => d.x! + 25)  // Offset from node
+    this.svg.selectAll<SVGTextElement, Note>("g.labels text")
+      .attr("x", d => d.x!)
       .attr("y", d => d.y!);
 
     // Update links
-    this.svg.selectAll<SVGLineElement, D3Link>("line")
-      .attr("x1", d => {
-        if (typeof d.source === 'string') return 0;
-        return (d.source as Note).x!;
-      })
-      .attr("y1", d => {
-        if (typeof d.source === 'string') return 0;
-        return (d.source as Note).y!;
-      })
-      .attr("x2", d => {
-        if (typeof d.target === 'string') return 0;
-        return (d.target as Note).x!;
-      })
-      .attr("y2", d => {
-        if (typeof d.target === 'string') return 0;
-        return (d.target as Note).y!;
-      });
+    this.svg.selectAll<SVGLineElement, D3Link>("g.links line")
+      .attr("x1", d => (d.source as Note).x!)
+      .attr("y1", d => (d.source as Note).y!)
+      .attr("x2", d => (d.target as Note).x!)
+      .attr("y2", d => (d.target as Note).y!);
+  }
+
+  // Add cleanup method
+  public destroy() {
+    if (this.simulation) {
+      this.simulation.stop();
+    }
+    if (this.container) {
+      this.container.innerHTML = '';
+    }
+    this.svg?.remove();
+  }
+
+  onResize() {
+    if (!this.container) return;
+    const svg = this.container.querySelector('svg');
+    if (svg) {
+      svg.setAttribute('width', `${this.container.offsetWidth}px`);
+      svg.setAttribute('height', `${this.container.offsetHeight}px`);
+    }
   }
 }

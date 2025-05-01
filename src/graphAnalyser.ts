@@ -1,35 +1,32 @@
-// src/graphAnalyser.ts
-
-import * as fs from 'fs';
-import * as path from 'path';
-
+// import * as fs from 'fs';
+// import * as path from 'path';
+import { TFile } from 'obsidian';
 export interface Note extends d3.SimulationNodeDatum {
   id: string;                 // File name or unique identifier
   title: string;
   content: string;
-  links: string[];            // Notes this one links to
+  links: string[];
+  file:  TFile,          // Notes this one links to
   x?: number;
   y?: number;
+  fx?: number | null;
+  fy?: number | null;
 }
 
 export class GraphAnalyser {
   private notes: Note[] = [];
 
   public async analyseVault(vaultPath: string): Promise<Note[]> {
-    const files = fs.readdirSync(path.join(vaultPath, 'notes'));
+    console.log('Analysing vault at:', vaultPath);
+    // You need to use the Obsidian API to access files in the vault.
+    // For example, you might inject an App or Vault instance and use vault.getMarkdownFiles()
+    // This is a placeholder and needs to be adapted to your plugin context.
+    // Example:
+    // const files = this.app.vault.getMarkdownFiles();
 
-    for (const file of files) {
-      const content = fs.readFileSync(path.join(vaultPath, 'notes', file), 'utf-8');
-      const links = this.extractLinks(content);
-      this.notes.push({
-        id: file,
-        title: this.extractTitle(file),
-        content,
-        links
-      });
-    }
-
-    return this.notes;
+    // Placeholder: return empty array or throw error
+    throw new Error("File system access must use the Obsidian API in a plugin context.");
+    // return [];
   }
 
   private extractLinks(content: string): string[] {

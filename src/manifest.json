@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "description": "A sample Obsidian plugin for gap filling",
   "main": "src/main.ts",
+  "stylesheets": ["src/styles.css"],
   "dependencies": ["d3"],
   "assets": {
     "graph-container": "<div id=\"graph-container\" style=\"width:100%; height:500px; border:1px solid #ccc;\"></div>"

@@ -4,14 +4,20 @@
   "description": "A sample Obsidian plugin for gap filling",
   "main": "dist/main.js",
   "scripts": {
-    "build": "tsc && cp src/manifest.json dist/ && cp -rf dist/ ./test/.obsidian/plugins/kggapfiller",
-    "dev": "ts-node --inspect=9229 src/main.ts"
+    "build": "tsc && mkdir -p ./test/.obsidian/plugins/kggapfiller && cp src/manifest.json dist/ && cp -rf dist/* ./test/.obsidian/plugins/kggapfiller",
+    "build:bundle": "esbuild --external:obsidian src/main.ts --bundle --platform=node --outfile=dist/main.js && mkdir -p ./test/.obsidian/plugins/kggapfiller && cp -rf dist/* ./test/.obsidian/plugins/kggapfiller",
+    "watch": "nodemon --watch src --ext ts --exec \"npm run build:bundle\""
+
   },
   "dependencies": {
-    "obsidian": "^1.0.0"
+    "d3": "^7.9.0",
+    "obsidian": "^1.8.7"
   },
   "devDependencies": {
-    "typescript": "^5.0.0",
-    "ts-node": "^10.0.0"
+    "@types/d3": "^7.4.3",
+    "esbuild": "^0.25.3",
+    "nodemon": "^3.1.10",
+    "ts-node": "^10.0.0",
+    "typescript": "^5.0.0"
   }
 }

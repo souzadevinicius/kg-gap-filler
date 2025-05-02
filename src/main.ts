@@ -5,23 +5,17 @@ import { GapDetector } from './gapDetector';
 import { LLMClient } from './lmmClient';
 import { GraphViewer } from './graphViewer';
 import { Note } from './graphAnalyser';
-import { Plugin, TFile, Notice, MarkdownView, App, PluginSettingTab, Setting } from 'obsidian';
-
-interface GapFillerSettings {
-    similarityThreshold: number;
-}
-
-const DEFAULT_SETTINGS: GapFillerSettings = {
-    similarityThreshold: 0.6,
-};
+import { Plugin, TFile, Notice, MarkdownView, App, PluginSettingTab, Setting, FileSystemAdapter } from 'obsidian';
+import { GapFillerSettings } from './settings';
 
 export default class KGGapFiller extends Plugin {
     settings!: GapFillerSettings;
+    private isRunning = false; // Class property to track running state
+
     private analyser!: GraphAnalyser;
     private detector!: GapDetector;
     private llmClient!: LLMClient;
     private viewer!: GraphViewer;
-    private container!: HTMLElement;
     private embeddingsCache: Record<string, number[]> = {};
     private latestFile?: Note;
 
@@ -39,77 +33,49 @@ export default class KGGapFiller extends Plugin {
         this.analyser = new GraphAnalyser();
         this.detector = new GapDetector();
         this.llmClient = new LLMClient('http://localhost:1234/v1/chat/completions');
-        this.viewer = new GraphViewer("graph-container");
-        this.container = await this.createContainer();
-        this.viewer.setContainer(this.container);
+
+
+        await this.loadSettings();
+
+
         this.addRibbonIcon('dot-network', 'Show D3 Graph', async () => {
             // Remove any previous container from the DOM (cleanup)
             const old = document.getElementById('graph-container');
             if (old && old.parentElement) old.parentElement.removeChild(old);
 
-            // Create a fresh container
-            const container = this.createContainer();
+            this.ensureSingleRightPaneAndRun();
 
-            // Try to find an existing right leaf with our container
-            let leaf = this.app.workspace.getRightLeaf(false);
-            let found = false;
-            if (leaf && leaf.view.containerEl.querySelector('#graph-container')) {
-                // Already open, just update content
-                leaf.view.containerEl.empty();
-                leaf.view.containerEl.appendChild(container);
-                found = true;
-            }
-
-            if (!found) {
-                // Attach to the right pane, or fallback to body
-                if (leaf) {
-                    await leaf.setViewState({ type: "empty", active: true });
-                    leaf.view.containerEl.empty();
-                    leaf.view.containerEl.appendChild(container);
-                } else {
-                    document.body.appendChild(container);
-                    console.warn('Using body container as fallback');
-                }
-            }
-
-            // Set the container for the viewer
-            this.viewer.setContainer(container);
-
-            // Get the currently active file robustly
-            const activeFile = this.getCurrentMarkdownFile(this.app);
-            if (!activeFile) {
-                new Notice("No active file found. Please focus a note and try again.");
-                return;
-            }
-
-            // Run analysis only for the current file
-            await this.run(activeFile, 1);
         });
 
         this.addCommand({
             id: 'fill-gap-bridges',
             name: 'Fill Gaps Using Bridges',
-            callback: () => this.run(this.getCurrentMarkdownFile(this.app))
+            callback: async() => await this.run(this.getCurrentMarkdownFile(this.app), 1)
         });
 
         // Watch for new or modified markdown files and update the graph if the container is visible
         this.registerEvent(
             this.app.vault.on('create', async (file) => {
                 if (file instanceof TFile && file.extension === 'md') {
-                    await this.run(this.getCurrentMarkdownFile(this.app));
+                    this.ensureSingleRightPaneAndRun();
+
                 }
             })
         );
+
         this.registerEvent(
             this.app.workspace.on('file-open', async (file) => {
-                await this.run(this.getCurrentMarkdownFile(this.app));
+                if (file instanceof TFile && file.extension === 'md') {
+                    await this.ensureSingleRightPaneAndRun();
+                }
             })
         );
 
         this.registerEvent(
             this.app.vault.on('modify', async (file) => {
                 if (file instanceof TFile && file.extension === 'md') {
-                    await this.run(this.getCurrentMarkdownFile(this.app));
+                    this.ensureSingleRightPaneAndRun();
+
                 }
             })
         );
@@ -119,38 +85,300 @@ export default class KGGapFiller extends Plugin {
             name: 'Reindex Note Embeddings',
             callback: () => this.reindexEmbeddings()
         });
+    }
 
-        // Add settings tab
-        this.addSettingTab(new GapFillerSettingTab(this.app, this));
 
-        await this.loadSettings();
+
+    private similarityThresholdElement(graphContainer: HTMLElement) {
+        const container = document.createElement('div');
+        container.innerHTML = `
+  <div style="position: absolute; top: 10px; left: 10px; display: flex; align-items: center; gap: 8px;">
+    <label style="font-size: 14px;">Threshold:</label>
+    <input type="number"
+           min="0.1"
+           max="1.0"
+           step="0.01"
+           value="${this.settings?.similarityThreshold ?? 0.75}"
+           style="width: 60px; padding: 4px; border-radius: 4px; border: 1px solid var(--background-modifier-border);">
+  </div>
+`;
+
+        const numericInput = container.querySelector('input') as HTMLInputElement;
+
+        numericInput.addEventListener('change', async (e) => {
+            const value = parseFloat((e.target as HTMLInputElement).value);
+            if (!isNaN(value)) {
+                this.settings.similarityThreshold = Math.max(0.1, Math.min(1.0, value));
+                numericInput.value = this.settings.similarityThreshold.toFixed(2);
+                this.latestFile = undefined;
+                await this.ensureSingleRightPaneAndRun();
+            }
+        });
+        graphContainer.appendChild(container);
+    }
+    private async openNote(file: TFile) {
+        // Check if we have access to the Obsidian app
+        try{
+            if (typeof this.app === 'undefined' || !this.app.workspace) {
+                console.error('Obsidian app not available');
+                return;
+            }
+            let mainLeaf = this.app?.workspace?.getMostRecentLeaf?.();
+            if (!mainLeaf) return;
+
+            // Get the file by path
+            const targetFile = this.app.vault.getAbstractFileByPath(file?.path);
+
+
+            if (mainLeaf) {
+                // Close current file if open (cleaner transition)
+                if (mainLeaf.view instanceof MarkdownView && mainLeaf.view.file) {
+                    await mainLeaf.setViewState({ type: 'empty' });
+                }
+
+                // Open new file
+                await mainLeaf.openFile(file, { active: true });
+                this.app.workspace.setActiveLeaf(mainLeaf);
+            }
+        } catch (error) {
+            console.error("Error opening note:", error);
+        }
+    }
+
+
+    private async ensureSingleRightPaneAndRun(): Promise<void> {
+        const activeFile = this.getCurrentMarkdownFile(this.app);
+        this.isRunning = (this.latestFile?.id === activeFile?.basename) && activeFile !== null;
+        if (this.isRunning) return;
+
+        try {
+            const container = this.createContainer();
+            if (!container) return;
+            // 1. First, ensure we have exactly one right leaf
+            let leaf = this.app.workspace.getLeavesOfType('empty').find(l => l.getRoot() === this.app.workspace.rightSplit);
+
+            // If no suitable leaf exists, create one properly
+            if (!leaf) {
+                // Close any existing empty right leaves to prevent splits
+                this.app.workspace.getLeavesOfType('empty')
+                .filter(l => l.getRoot() === this.app.workspace.rightSplit)
+                .forEach(l => l.detach());
+
+                // Create exactly one new leaf in the right split
+                const maybeLeaf = this.app.workspace.getRightLeaf(false);
+                leaf = maybeLeaf === null ? undefined : maybeLeaf;
+                if (leaf) {
+                    await leaf.setViewState({ type: "empty", active: true });
+                } else {
+                    throw new Error("Failed to create or find a right leaf.");
+                }
+            }
+
+            // 2. Clean up any existing containers
+            const old = document.getElementById('graph-container');
+            if (old?.parentElement) old.parentElement.removeChild(old);
+
+
+            leaf.view.containerEl.empty();
+            leaf.view.containerEl.appendChild(container);
+            this.viewer.setClickCallback(this.openNote.bind(this));
+            this.viewer.setContainer(container);
+
+            // --- Add filter input ---
+            const filterInput = container.querySelector<HTMLInputElement>('#graph-node-filter');
+            if (filterInput) {
+                filterInput.addEventListener('input', (e) => {
+                    const value = (e.target as HTMLInputElement).value;
+                    this.viewer.setNodeFilter(value);
+                });
+            }
+            // ------------------------
+
+            // 4. Run the visualization
+            if (!activeFile) return;
+
+            await this.run(this.getCurrentMarkdownFile(this.app), 1)
+        } catch (error) {
+            console.log(error)
+            // this?.viewer?.destroy();
+            // setTimeout(async () => {
+            //     this.isRunning = false;
+            //     await this.run(this.getCurrentMarkdownFile(this.app), 1, true)
+            // }, 1000);
+        } finally {
+            this.isRunning = false;
+        }
     }
 
     async loadSettings() {
-        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+        this.settings = Object.assign({}, this.settings, await this.loadData());
     }
 
     async saveSettings() {
         await this.saveData(this.settings);
     }
 
-    private createContainer(): HTMLElement {
-        // Always create a new div for the container
+    private createContainer(): HTMLElement | null {
+        if (this.isRunning){
+            this.isRunning = false;
+            return null
+        }
         const container = document.createElement('div');
         container.id = 'graph-container';
-        container.style.height = '100%';
-        container.style.width = '100%';
-        container.createEl('div', { attr: { id: 'd3-graph-container' } });
+        container.innerHTML = `
+        <div>
+            <!-- Filter input -->
+            <div style="margin: 8px 0; text-align: right;">
+                <input type="text"
+                       id="graph-node-filter"
+                       placeholder="Filter nodes by title..."
+                       style="margin-right: 10px; padding: 4px 8px; border: 1px solid #ccc; border-radius: 4px;">
+            </div>
+
+            <!-- Vertical controls -->
+            <div id="graph-controls" style="margin-bottom: 12px; display: flex; flex-direction: column; gap: 8px;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <label style="min-width: 120px;">Link Distance:</label>
+                    <input type="range" id="linkDistance" min="50" max="400" value="${this.settings.linkDistance || 400}" style="flex: 1;">
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <label style="min-width: 120px;">Link Strength:</label>
+                    <input type="range" id="linkStrength" min="0" max="2" step="0.01" value="${this.settings.linkStrength || 1}" style="flex: 1;">
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <label style="min-width: 120px;">Charge Strength:</label>
+                    <input type="range" id="chargeStrength" min="-2000" max="0" step="10" value="${this.settings.chargeStrength || -400}" style="flex: 1;">
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <label style="min-width: 120px;">Centering Force:</label>
+                    <input type="range" id="centerStrength" min="0" max="2" step="0.01" value="${this.settings.centerStrength || 1}" style="flex: 1;">
+                </div>
+            </div>
+
+            <!-- Graph container -->
+            <div id="d3-graph-container" style="height: calc(100% - 120px);"></div>
+        </div>
+    `;
+
+        this.viewer = new GraphViewer(container, this.settings);
+
+        container.querySelector('#linkDistance')!.addEventListener('input', (e) => {
+            this.viewer.updateForces({ linkDistance: +(e.target as HTMLInputElement).value });
+        });
+        container.querySelector('#linkStrength')!.addEventListener('input', (e) => {
+            this.viewer.updateForces({ linkStrength: +(e.target as HTMLInputElement).value });
+        });
+        container.querySelector('#chargeStrength')!.addEventListener('input', (e) => {
+            this.viewer.updateForces({ chargeStrength: +(e.target as HTMLInputElement).value });
+        });
+        container.querySelector('#centerStrength')!.addEventListener('input', (e) => {
+            this.viewer.updateForces({ centerStrength: +(e.target as HTMLInputElement).value });
+        });
+
+
+        this.similarityThresholdElement(container);
+
         return container;
     }
 
-    public async run(file: TFile | null, depth: number = 1, useEmbeddings: boolean = true): Promise<void> {
-        if (!file) {
-            new Notice("No active file found.");
-            return;
+    private async getClusters( notes: Note[], depth: number, file: TFile): Promise<{ clusters: string[][], shallowNotes: Note[], shallowLinks: string[][] }> {
+        if (this.settings.useEmbeddings) {
+            // Use embeddings to build connections
+            this.embeddingsCache = await this.loadEmbeddingsFromFile();
+            // Find the active note
+            const activeNote = notes.find(n => n.file && file && n.file.path === file.path);
+            if (!activeNote) {
+                new Notice("Active note not found in notes array.");
+                return {"clusters": [], "shallowNotes": [], "shallowLinks": []};
+            }
+            // Collect nodes up to the given depth using semantic similarity
+            let currentLevel = new Set<string>([activeNote.id]);
+            let allIncluded = new Set<string>([activeNote.id]);
+            for (let d = 0; d < depth; d++) {
+                const nextLevel = new Set<string>();
+                for (const id of currentLevel) {
+                    const embA = this.embeddingsCache[id];
+                    if (!embA) continue;
+                    for (const n of notes) {
+                        if (allIncluded.has(n.id)) continue;
+                        const embB = this.embeddingsCache[n.id];
+                        if (!embB) continue;
+                        const sim = this.detector.cosineSimilarity(embA, embB);
+                        if (sim >= this.settings.similarityThreshold) {
+                            nextLevel.add(n.id);
+                        }
+                    }
+                }
+                nextLevel.forEach(id => allIncluded.add(id));
+                currentLevel = nextLevel;
+            }
+            let shallowNotes = notes.filter(n => allIncluded.has(n.id));
+            let shallowLinks = [];
+            for (const a of shallowNotes) {
+                for (const b of shallowNotes) {
+                    if (a.id !== b.id) {
+                        const embA = this.embeddingsCache[a.id];
+                        const embB = this.embeddingsCache[b.id];
+                        if (embA && embB && this.detector.cosineSimilarity(embA, embB) >= this.settings.similarityThreshold) {
+                            shallowLinks.push([a.id, b.id]);
+                        }
+                    }
+                }
+            }
+            return {
+                "clusters":this.detector.clusterByEmbeddingsCache(shallowNotes, this.embeddingsCache, this.settings.similarityThreshold),
+                "shallowNotes": shallowNotes,
+                "shallowLinks": shallowLinks
+
+            }
         }
 
+    // Use concrete links with depth limitation
+    const activeNote = notes.find(n => n.file && file && n.file.path === file.path);
+    if (!activeNote) {
+        new Notice("Active note not found in notes array.");
+        return { clusters: [], shallowNotes: [], shallowLinks: [] };
+    }
 
+    // Depth-limited traversal
+    let currentLevel = new Set<string>([activeNote.id]);
+    let allIncluded = new Set<string>([activeNote.id]);
+
+    for (let d = 0; d < depth; d++) {
+        const nextLevel = new Set<string>();
+        for (const id of currentLevel) {
+            const node = notes.find(n => n.id === id);
+            if (!node) continue;
+
+            // Outgoing links
+            node.links.forEach(l => {
+                if (!allIncluded.has(l)) nextLevel.add(l);
+            });
+
+            // Incoming links (if needed)
+            notes.forEach(n => {
+                if (n.links.includes(node.id) && !allIncluded.has(n.id)) {
+                    nextLevel.add(n.id);
+                }
+            });
+        }
+
+        nextLevel.forEach(id => allIncluded.add(id));
+        currentLevel = nextLevel;
+    }
+
+    // Only analyze notes within depth limit
+    const shallowNotes = notes.filter(n => allIncluded.has(n.id));
+
+    return {
+        clusters: this.detector.findClustersFromSubgraph(shallowNotes),
+        shallowNotes: shallowNotes,
+        shallowLinks: this.buildLinks(shallowNotes)
+    };
+    }
+
+    public async run(file: TFile | null, depth: number = 1): Promise<void> {
+        if (!file) return;
         // Build notes array as before
         const files = this.app.vault.getMarkdownFiles();
         const notes: Note[] = [];
@@ -166,166 +394,108 @@ export default class KGGapFiller extends Plugin {
         }
 
         const activeNote = notes.find(n => n.file && file && n.file.path === file.path);
-        if (this.latestFile && this.latestFile.id === activeNote?.id) {
-            return;
-        }
 
+        if (this.latestFile && this.latestFile.id === activeNote?.id) return;
 
-        this.embeddingsCache = await this.loadEmbeddingsFromFile();
-
-        // Find the active note
         if (!activeNote) {
             new Notice("Active note not found in notes array.");
             return;
         }
 
-        let shallowNotes: Note[] = [];
-        let shallowLinks: string[][] = [];
-
-        if (useEmbeddings) {
-            // Use embeddings to build connections
-            this.embeddingsCache = await this.loadEmbeddingsFromFile();
-            // Find the active note
-            const activeNote = notes.find(n => n.file && file && n.file.path === file.path);
-            if (!activeNote) {
-                new Notice("Active note not found in notes array.");
-                return;
-            }
-            // Collect nodes up to the given depth using semantic similarity
-            let currentLevel = new Set<string>([activeNote.id]);
-            let allIncluded = new Set<string>([activeNote.id]);
-            for (let d = 0; d < depth; d++) {
-                const nextLevel = new Set<string>();
-                for (const id of currentLevel) {
-                    const embA = this.embeddingsCache[id];
-                    if (!embA) continue;
-                    for (const n of notes) {
-                        if (allIncluded.has(n.id)) continue;
-                        const embB = this.embeddingsCache[n.id];
-                        if (!embB) continue;
-                        // Use a similarity threshold (e.g., 0.75)
-                        const sim = this.detector.cosineSimilarity(embA, embB);
-                        if (sim >= this.settings.similarityThreshold) {
-                            nextLevel.add(n.id);
-                        }
-                    }
-                }
-                nextLevel.forEach(id => allIncluded.add(id));
-                currentLevel = nextLevel;
-            }
-            shallowNotes = notes.filter(n => allIncluded.has(n.id));
-            // Build links based on semantic similarity
-            shallowLinks = [];
-            for (const a of shallowNotes) {
-                for (const b of shallowNotes) {
-                    if (a.id !== b.id) {
-                        const embA = this.embeddingsCache[a.id];
-                        const embB = this.embeddingsCache[b.id];
-                        if (embA && embB && this.detector.cosineSimilarity(embA, embB) >= 0.75) {
-                            shallowLinks.push([a.id, b.id]);
-                        }
-                    }
-                }
-            }
-        } else {
-            // Use concrete links as before
-            const activeNote = notes.find(n => n.file && file && n.file.path === file.path);
-            if (!activeNote) {
-                new Notice("Active note not found in notes array.");
-                return;
-            }
-            let currentLevel = new Set<string>([activeNote.id]);
-            let allIncluded = new Set<string>([activeNote.id]);
-            for (let d = 0; d < depth; d++) {
-                const nextLevel = new Set<string>();
-                for (const id of currentLevel) {
-                    const node = notes.find(n => n.id === id);
-                    if (!node) continue;
-                    // Outgoing
-                    node.links.forEach(l => {
-                        if (!allIncluded.has(l)) nextLevel.add(l);
-                    });
-                    // Incoming
-                    notes.forEach(n => {
-                        if (n.links && n.links.includes(node.title) && !allIncluded.has(n.id)) {
-                            nextLevel.add(n.id);
-                        }
-                    });
-                }
-                nextLevel.forEach(id => allIncluded.add(id));
-                currentLevel = nextLevel;
-            }
-            shallowNotes = notes.filter(n => allIncluded.has(n.id) || (n.isBridge && n.links.some(l => allIncluded.has(l))));
-            shallowLinks = this.buildLinks(shallowNotes);
-        }
+        let {clusters, shallowNotes, shallowLinks} = await this.getClusters( notes, depth, file);
 
 
-        // For a single file, you may want to analyze the whole vault for clusters
-        const clusters = this.detector.clusterByEmbeddingsCache(shallowNotes, this.embeddingsCache, 0.75);
-        console.log(`Clusters found: ${clusters.length}`);
+
+        console.log(`clusters found: ${clusters.length}`);
         console.log(`shallowNotes found: ${shallowNotes.length}`);
         console.log(`shallowLinks found: ${shallowLinks.length}`);
-        // this.detector.analyseGraph(notes); // Build the graph
-        this.viewer.drawGraph(shallowNotes, shallowLinks);
+
         const topicsSearched : string[] = [];
         this.latestFile = activeNote
-        if (clusters.length > 1) {
-            for (let i = 0; i < clusters.length; i++) {
-                for (let j = i + 1; j < clusters.length; j++) {
-                    const clusterA = clusters[i].map(id => notes.find(n => n.id === id)?.title).filter(Boolean).join(', ');
-                    const clusterB = clusters[j].map(id => notes.find(n => n.id === id)?.title).filter(Boolean).join(', ');
 
-                    // Pick representative notes from each cluster (first note in each cluster)
-                    const repA = notes.find(n => n.id === clusters[i][0]);
-                    const repB = notes.find(n => n.id === clusters[j][0]);
+        try {
+            this.viewer?.drawGraph(shallowNotes, shallowLinks);
+        } catch (error) {
+        }
+        const seenClusters: string[] = [];
+        if (clusters.length < 1) return;
+        let bridgeCreated = false; // Add this before the for loops
 
-                    if (clusterA.length > 0 && clusterB.length > 0 && repA && repB) {
-                        if (topicsSearched.includes(clusterA) && topicsSearched.includes(clusterB)) {
-                            continue;
-                        }
-                        topicsSearched.push(clusterA, clusterB);
-                        const prompt = `Given the topics: [${clusterA}] and [${clusterB}], suggest the two (and only two) most relevant topics, or entity that could serve as a bridge between these two clusters.
-                        Return ONLY the bridge topic as the first line, a one-sentence summary as the second line, and a Wikipedia URL about that topic as the third line.
-                        If no meaningful bridge exists, reply with "NO BRIDGE".`;
-
-                        const bridge = await this.llmClient.generateContent(prompt);
-
-                        // Parse the LLM response
-                        let [bridgeTopic, bridgeSummary, wikiUrl] = bridge.trim().split('\n').map(s => s.trim());
-
-                        if (
-                            bridgeTopic &&
-                            bridgeTopic.toUpperCase() !== "NO BRIDGE" &&
-                            bridgeTopic.length > 3 &&
-                            wikiUrl && wikiUrl.includes("http")
-                        ) {
-                            wikiUrl = `https://${wikiUrl.split("//")[1]}`;
-                            shallowNotes.push({
-                                id: bridgeTopic,
-                                title: bridgeTopic.replace(/\*\*Bridge Topic:\*\*/g, ' '),
-                                file: repA.file, // Use repA's file as a placeholder
-                                content: bridgeSummary,
-                                links: [repA.title, repB.title].filter(Boolean),
-                                isBridge: true,
-                                wikiUrl,
-                                summary: bridgeSummary
-                            });
-                            console.log(wikiUrl)
-                            shallowLinks = this.buildLinks(shallowNotes);
-                            this.viewer.drawGraph(shallowNotes, shallowLinks);
-                        }
-                    } else {
-                        new Notice(`Empty cluster found, skipping. {clusterA: ${clusterA}, clusterB: ${clusterB}}`);
-                    }
-
-                    console.log(`$clusters found: ${clusterA}, ${clusterB}`);
-                    new Notice("Bridge notes created (if any meaningful bridges were found).");
+        for (let i = 0; i < clusters.length; i++) {
+            for (let j = i + 1; j < clusters.length; j++) {
+                if (seenClusters.includes(clusters[i].toString()) && seenClusters.includes(clusters[j].toString())) {
+                    continue;
                 }
+                const clusterA = clusters[i].map(id => notes.find(n => n.id === id)?.title).filter(Boolean).join(', ');
+                const clusterB = clusters[j].map(id => notes.find(n => n.id === id)?.title).filter(Boolean).join(', ');
+                seenClusters.push(clusterA, clusterB);
+                // Pick representative notes from each cluster (first note in each cluster)
+                const repA = notes.find(n => n.id === clusters[i][0]);
+                const repB = notes.find(n => n.id === clusters[j][0]);
+
+                if (clusterA.length < 1 || clusterB.length < 1 || !repA || !repB) {
+                    new Notice(`Empty cluster found, skipping. {clusterA: ${clusterA}, clusterB: ${clusterB}}`);
+                    continue;
+                }
+                if (topicsSearched.includes(clusterA) && topicsSearched.includes(clusterB)) {
+                    continue;
+                }
+
+                topicsSearched.push(clusterA, clusterB);
+                const prompt = `Given the topics: [${clusterA}] and [${clusterB}], suggest the two (and two maximum) most relevant topics, or entity that could serve as a bridge between these two clusters.
+                            Return ONLY the bridge topic and the wikipedia article url in a json array object with e.g {title:'title', link: 'link'}.
+                            If no meaningful bridge exists, reply with [] try it in english or portuguese.`;
+                // const prompt = `Given the topics: [${clusterA}] and [${clusterB}], suggest the three (and only three) most relevant topics, or entity that could serve as a bridge between these two clusters.
+                //             Return ONLY the bridge topic and the article url in a json array object with e.g {title:'title', link: 'link'}.
+                //             If no meaningful bridge exists, reply with [] try it in english or portuguese.`;
+
+                let bridge = (await this.llmClient.generateContent(prompt)).replace(/\\n/g, ' ').replace(/```json/g, "").replace(/```/g, '');
+                let bridgeObject = [];
+                try {
+                    bridgeObject = JSON.parse(bridge);
+                } catch (error) {
+                    continue;
+                }
+                if (bridgeObject.length === 0) {
+                    continue;
+                }
+                for(const b of bridgeObject){
+                    if (!b || !b.title ||  !b.link) {
+                        continue;
+                    }
+                    b.link = `https://${b.link.split("//")[1]}`;
+                    const bridgeNote: Note = {
+                        id: b?.title,
+                        title: b?.title.replace(/\*\*Bridge Topic:\*\*/g, ' ').replace(/Bridge Topic:/g, ' ').replace(/Bridge topic:/g, " ").replace(/\*/g,''),
+                        file: repA.file, // Use repA's file as a placeholder
+                        content: "",
+                        links: [repA.title, repB.title].filter(Boolean),
+                        isBridge: true,
+                        wikiUrl: b.link,
+                        summary: ""
+                    };
+                    try {
+                        this.viewer.addNodesAndLinks(
+                            [bridgeNote],
+                            [[bridgeNote.id, repA.id], [bridgeNote.id, repB.id]]
+                        );
+                        bridgeCreated = true; // Set flag if a bridge is created
+                    } catch (error) {
+                        setTimeout(async() => {
+                            await this.run(activeNote.file, 1);
+                        }, 500)
+                    }
+                }
+                console.log(`$clusters found: ${clusterA}, ${clusterB}`);
             }
-        } else {
-            new Notice("No clusters found or only one cluster present.");
         }
 
+        // After the loops, show the notice only if a bridge was created and clusters are valid
+        if (clusters.length > 1 && bridgeCreated) {
+            new Notice("Bridge notes created (if any meaningful bridges were found).");
+            return;
+        }
+        new Notice("No clusters found or only one cluster present.");
     }
 
     private buildLinks(notes: Note[]): string[][] {
@@ -353,54 +523,27 @@ export default class KGGapFiller extends Plugin {
     }
 
     private async saveEmbeddingsToFile(embeddings: Record<string, number[]>, fileName = 'embeddings-cache.json') {
-        const filePath = `${fileName}`;
         const content = JSON.stringify(embeddings);
-        // Check if file exists
-        let file = this.app.vault.getAbstractFileByPath(filePath);
-        if (file) {
-            await this.app.vault.modify(file as TFile, content);
-        } else {
-            await this.app.vault.create(filePath, content);
+        try {
+            // Save to the root of the vault
+            await this.app.vault.adapter.write(fileName, content);
+            new Notice(`Embeddings saved to ${fileName}`);
+        } catch (err) {
+            new Notice(`Failed to save embeddings: ${err}`);
         }
-        new Notice(`Embeddings saved to ${filePath}`);
     }
 
     private async loadEmbeddingsFromFile(fileName = 'embeddings-cache.json'): Promise<Record<string, number[]>> {
-        const filePath = `${fileName}`;
-        const file = this.app.vault.getAbstractFileByPath(filePath);
-        if (!file) return {};
-        const content = await this.app.vault.read(file as TFile);
+        if (Object.keys(this.embeddingsCache).length > 0) {
+            // Return cached embeddings if already loaded
+            return this.embeddingsCache;
+        }
         try {
-            return JSON.parse(content);
+            const content = await this.app.vault.adapter.read(fileName);
+            this.embeddingsCache = JSON.parse(content);
+            return this.embeddingsCache;
         } catch {
             return {};
         }
-    }
-}
-
-class GapFillerSettingTab extends PluginSettingTab {
-    plugin: KGGapFiller;
-
-    constructor(app: App, plugin: KGGapFiller) {
-        super(app, plugin);
-        this.plugin = plugin;
-    }
-
-    display(): void {
-        const { containerEl } = this;
-        containerEl.empty();
-
-        new Setting(containerEl)
-            .setName('Similarity Threshold')
-            .setDesc('Minimum cosine similarity for semantic connections (0.0 - 1.0)')
-            .addSlider(slider => slider
-                .setLimits(0, 1, 0.01)
-                .setValue(this.plugin.settings.similarityThreshold)
-                .onChange(async (value) => {
-                    this.plugin.settings.similarityThreshold = value;
-                    await this.plugin.saveSettings();
-                })
-                .setDynamicTooltip()
-            );
     }
 }

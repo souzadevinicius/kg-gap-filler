@@ -23,6 +23,7 @@ export class LLMClient {
     return data.data[0].embedding;
   }
 
+
   public async generateContent(prompt: string): Promise<string> {
     try {
         console.log("LLM prompt:", prompt);
@@ -33,7 +34,8 @@ export class LLMClient {
                 // Add if needed: 'Authorization': `Bearer ${API_KEY}`
             },
             body: JSON.stringify({
-                model: "mistral-nemo-instruct-2407", // MUST match loaded model
+                model: "phi-4", // MUST match loaded model
+                // model: "mistral-nemo-instruct-2407", // MUST match loaded model
                 messages: [{ role: "user", content: prompt }],
                 temperature: 0.2
             })

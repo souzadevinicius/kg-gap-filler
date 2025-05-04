@@ -217,18 +217,6 @@ export default class KGGapFiller extends Plugin {
                     <label style="min-width: 120px;">Link Distance:</label>
                     <input type="range" id="linkDistance" min="50" max="400" value="${this.settings.linkDistance || 400}" style="flex: 1;">
                 </div>
-                <div style="display: flex; align-items: center; gap: 8px;">
-                    <label style="min-width: 120px;">Link Strength:</label>
-                    <input type="range" id="linkStrength" min="0" max="2" step="0.01" value="${this.settings.linkStrength || 1}" style="flex: 1;">
-                </div>
-                <div style="display: flex; align-items: center; gap: 8px;">
-                    <label style="min-width: 120px;">Charge Strength:</label>
-                    <input type="range" id="chargeStrength" min="-2000" max="0" step="10" value="${this.settings.chargeStrength || -400}" style="flex: 1;">
-                </div>
-                <div style="display: flex; align-items: center; gap: 8px;">
-                    <label style="min-width: 120px;">Centering Force:</label>
-                    <input type="range" id="centerStrength" min="0" max="2" step="0.01" value="${this.settings.centerStrength || 1}" style="flex: 1;">
-                </div>
             </div>
 
             <!-- Textarea and submit button at the bottom -->
@@ -265,15 +253,6 @@ export default class KGGapFiller extends Plugin {
 
         container.querySelector('#linkDistance')!.addEventListener('input', (e) => {
             this.viewer.updateForces({ linkDistance: +(e.target as HTMLInputElement).value });
-        });
-        container.querySelector('#linkStrength')!.addEventListener('input', (e) => {
-            this.viewer.updateForces({ linkStrength: +(e.target as HTMLInputElement).value });
-        });
-        container.querySelector('#chargeStrength')!.addEventListener('input', (e) => {
-            this.viewer.updateForces({ chargeStrength: +(e.target as HTMLInputElement).value });
-        });
-        container.querySelector('#centerStrength')!.addEventListener('input', (e) => {
-            this.viewer.updateForces({ centerStrength: +(e.target as HTMLInputElement).value });
         });
 
 
@@ -353,7 +332,7 @@ export default class KGGapFiller extends Plugin {
                     [
                         [bridgeNote.title, bridgeNote.links[0]],
                         [bridgeNote.id, bridgeNote.links[1]]
-                    ]
+                    ],
                 );
             });
         } catch (error) {
@@ -548,7 +527,7 @@ export default class KGGapFiller extends Plugin {
                             }
                             this.viewer.addNodesAndLinks(
                                 [bridgeNote],
-                                [[bridgeNote.id, repA.id], [bridgeNote.id, repB.id]]
+                                [[bridgeNote.id, repA.id], [bridgeNote.id, repB.id]],
                             );
                         });
                         bridgeCreated = true; // Set flag if a bridge is created

@@ -125,15 +125,23 @@ export class GraphViewer {
       this.currentNodes = [...notes];
       this.currentLinks = sourceTargetPairs(links, notes);
       // Create new simulation
+
+      const nodeCount = notes.length;
+      const linkDistance = Math.max(50, 200 - nodeCount); // Adjust based on node count
+      const chargeStrength = -500 * (1 + nodeCount / 50); // Scale repulsion with node count
+
       this.simulation = d3.forceSimulation<Note>(notes)
       .force("link", d3.forceLink<Note, D3Link>(this.currentLinks)
       .id(d => d.id)
-      .distance(150))
-      .force("charge", d3.forceManyBody().strength(-400))
+      .distance(linkDistance))
+      .force("charge", d3.forceManyBody().strength(chargeStrength))
       .force("center", d3.forceCenter(this.width / 2, this.height / 2))
-      .force("collide", d3.forceCollide(40))
-      .alpha(1)
+      .force("collide", d3.forceCollide(40 + nodeCount / 10)) // Increase collision radius with more nodes
+      .force("x", d3.forceX(this.width / 2).strength(0.05))
+      .force("y", d3.forceY(this.height / 2).strength(0.05))
+      .alphaDecay(0.02)
       .on("tick", () => this.tick());
+
 
       // Draw links
       if (this.svg) {
@@ -218,14 +226,14 @@ export class GraphViewer {
       if (uniqueNewNodes.length === 0 && newLinks.length === 0) return;
 
       // Add new nodes (filter undefined ids)
-      const updatedNodes = [
+      let updatedNodes = [
         ...this.currentNodes,
         ...uniqueNewNodes.filter(n => n.id !== undefined)
       ];
       this.currentNodes = updatedNodes;
 
       // Add new links (only if both nodes exist)
-      const updatedLinks = [
+      let updatedLinks = [
         ...this.currentLinks,
         ...newLinks
         .map(link => {
@@ -235,8 +243,21 @@ export class GraphViewer {
         })
         .filter(link => link !== null) as D3Link[]
       ];
-      this.currentLinks = updatedLinks;
 
+      // --- Improved: Avoid dangling nodes ---
+      // Find nodes with no connections
+      const connectedIds = new Set<string>();
+      updatedLinks.forEach(link => {
+        connectedIds.add((link.source as Note).id);
+        connectedIds.add((link.target as Note).id);
+      });
+      updatedNodes = updatedNodes.filter(n => connectedIds.has(n.id));
+
+      // --- End avoid dangling nodes ---
+
+      this.currentNodes = updatedNodes;
+      this.currentLinks = updatedLinks;
+      console.log("currentNodes", this.currentNodes);
       // Update simulation
       this.simulation.nodes(updatedNodes);
       (this.simulation.force("link") as d3.ForceLink<Note, D3Link>)

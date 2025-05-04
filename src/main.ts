@@ -24,6 +24,8 @@ export default class KGGapFiller extends Plugin {
     public shallowNotes: Note[] = [];
     public shallowLinks: string[][] = [];
 
+    private currentRunToken: number = 0;
+
     // Helper: robustly get the last active Markdown file
     private getCurrentMarkdownFile(app: App): TFile | null {
         const leaf = app.workspace.getMostRecentLeaf();
@@ -456,6 +458,7 @@ export default class KGGapFiller extends Plugin {
     }
 
     public async run(file: TFile | null, depth: number = 1): Promise<void> {
+        const runToken = ++this.currentRunToken;
         if (!file) return;
         // Build notes array as before
         const files = this.app.vault.getMarkdownFiles();
@@ -530,10 +533,13 @@ export default class KGGapFiller extends Plugin {
                 const response = (await this.llmClient.generateContent(prompt)).replace(/\\n/g, ' ').replace(/```json/g, "").replace(/```/g, '');
                 let bridgeList = await this.viewer.parseBridgeResponse(response, repA, repB);
                 try {
-                    bridgeList.forEach(bridgeNote => (this.viewer.addNodesAndLinks(
-                        [bridgeNote],
-                        [[bridgeNote.id, repA.id], [bridgeNote.id, repB.id]]
-                    )));
+                    bridgeList.forEach(bridgeNote => {
+                        if (runToken !== this.currentRunToken) return; // Check again before UI update
+                        this.viewer.addNodesAndLinks(
+                            [bridgeNote],
+                            [[bridgeNote.id, repA.id], [bridgeNote.id, repB.id]]
+                        );
+                    });
                     bridgeCreated = true; // Set flag if a bridge is created
                 } catch (error) {
                     setTimeout(async() => {

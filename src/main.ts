@@ -284,6 +284,8 @@ export default class KGGapFiller extends Plugin {
         if (!question || question.trim() === "") {
             return "";
         }
+        this.showLoading("Generating response...");
+
         const actualNote = await this.getCurrentMarkdownFile(this.app);
         let prompt = ''
         if (!actualNote) {
@@ -312,14 +314,14 @@ export default class KGGapFiller extends Plugin {
             (b.links[1] && (a.id === b.links[1] || a.links.includes(b.links[1])));
 
             // Get all notes connected to the bridgeList
-            let possibleNewNotes = this.notes.filter(n =>
+            const possibleNewNotes = this.notes.filter(n =>
                 bridgeList.some(b => areNotesConnected(n, b))
             );
 
-            // Expand to notes connected to the connected notes
-            possibleNewNotes = this.notes.filter(n =>
-                possibleNewNotes.some(b => areNotesConnected(n, b))
-            );
+            // // Expand to notes connected to the connected notes
+            // possibleNewNotes = this.notes.filter(n =>
+            //     possibleNewNotes.some(b => areNotesConnected(n, b))
+            // );
 
             // Merge and deduplicate notes
             const merged = Array.from(new Map(
@@ -356,6 +358,8 @@ export default class KGGapFiller extends Plugin {
             });
         } catch (error) {
             console.error("Error adding nodes and links:", error);
+        } finally {
+            this.hideLoading()
         }
         new Notice("Bridge notes created (if any meaningful bridges were found).");
     }
@@ -460,102 +464,112 @@ export default class KGGapFiller extends Plugin {
     public async run(file: TFile | null, depth: number = 1): Promise<void> {
         const runToken = ++this.currentRunToken;
         if (!file) return;
-        // Build notes array as before
-        const files = this.app.vault.getMarkdownFiles();
-        const notes: Note[] = [];
-        for (const file of files) {
-            const content = await this.app.vault.read(file);
-            notes.push({
-                id: file.basename,
-                title: file.basename,
-                file: file,
-                links: this.analyser['extractLinks'](content)
-            });
-        }
-        this.notes = notes;
-        const activeNote = this.notes.find(n => n.file && file && n.file.path === file.path);
-        if (this.latestFile && this.latestFile.id === activeNote?.id) return;
 
-        if (!activeNote) {
-            new Notice("Active note not found in notes array.");
-            return;
-        }
-
-        let {clusters, shallowNotes, shallowLinks} = await this.getClusters(depth, file);
-
-        this.clusters = clusters;
-        this.shallowNotes = shallowNotes;
-        this.shallowLinks = shallowLinks;
-
-        console.log(`clusters found: ${clusters.length}`);
-        console.log(`shallowNotes found: ${shallowNotes.length}`);
-        console.log(`shallowLinks found: ${shallowLinks.length}`);
-
-        const topicsSearched : string[] = [];
-        this.latestFile = activeNote
+        this.showLoading("Finding clusters and bridges...");
 
         try {
-            this.viewer?.drawGraph(shallowNotes, shallowLinks);
-        } catch (error) {
-        }
-        const seenClusters: string[] = [];
-        if (clusters.length < 1) return;
-        let bridgeCreated = false; // Add this before the for loops
-
-        for (let i = 0; i < clusters.length; i++) {
-            for (let j = i + 1; j < clusters.length; j++) {
-                if (seenClusters.includes(clusters[i].toString()) && seenClusters.includes(clusters[j].toString())) {
-                    continue;
-                }
-                const clusterA = clusters[i].map(id => this.notes.find(n => n.id === id)?.title).filter(Boolean).join(', ');
-                const clusterB = clusters[j].map(id => this.notes.find(n => n.id === id)?.title).filter(Boolean).join(', ');
-                seenClusters.push(clusterA, clusterB);
-                // Pick representative notes from each cluster (first note in each cluster)
-                const repB = this.notes.find(n => n.id === clusters[j][0]);
-                const repA = this.notes.find(n => n.id === clusters[i][0]);
-
-                if (clusterA.length < 1 || clusterB.length < 1 || !repA || !repB) {
-                    new Notice(`Empty cluster found, skipping. {clusterA: ${clusterA}, clusterB: ${clusterB}}`);
-                    continue;
-                }
-                if (topicsSearched.includes(clusterA) && topicsSearched.includes(clusterB)) {
-                    continue;
-                }
-
-                topicsSearched.push(clusterA, clusterB);
-                const prompt = `Given the topics: [${clusterA}] and [${clusterB}], suggest the two (and two maximum) most relevant topics, or entity that could serve as a bridge between these two clusters.
-                            Return ONLY the bridge topic and the wikipedia article url in a json array object with e.g {title:'title', link: 'link'}.
-                            If no meaningful bridge exists, reply with [] try it in english or portuguese.`;
-                // const prompt = `Given the topics: [${clusterA}] and [${clusterB}], suggest the three (and only three) most relevant topics, or entity that could serve as a bridge between these two clusters.
-                //             Return ONLY the bridge topic and the article url in a json array object with e.g {title:'title', link: 'link'}.
-                //             If no meaningful bridge exists, reply with [] try it in english or portuguese.`;
-
-                const response = (await this.llmClient.generateContent(prompt)).replace(/\\n/g, ' ').replace(/```json/g, "").replace(/```/g, '');
-                let bridgeList = await this.viewer.parseBridgeResponse(response, repA, repB);
-                try {
-                    bridgeList.forEach(bridgeNote => {
-                        if (runToken !== this.currentRunToken) return; // Check again before UI update
-                        this.viewer.addNodesAndLinks(
-                            [bridgeNote],
-                            [[bridgeNote.id, repA.id], [bridgeNote.id, repB.id]]
-                        );
-                    });
-                    bridgeCreated = true; // Set flag if a bridge is created
-                } catch (error) {
-                    setTimeout(async() => {
-                        await this.run(activeNote.file, 1);
-                    }, 500)
-                }
-                console.log(`$clusters found: ${clusterA}, ${clusterB}`);
+            // Build notes array as before
+            const files = this.app.vault.getMarkdownFiles();
+            const notes: Note[] = [];
+            for (const file of files) {
+                const content = await this.app.vault.read(file);
+                notes.push({
+                    id: file.basename,
+                    title: file.basename,
+                    file: file,
+                    links: this.analyser['extractLinks'](content)
+                });
             }
-        }
+            this.notes = notes;
+            const activeNote = this.notes.find(n => n.file && file && n.file.path === file.path);
+            if (this.latestFile && this.latestFile.id === activeNote?.id) return;
 
-        // After the loops, show the notice only if a bridge was created and clusters are valid
-        if (clusters.length > 1 && bridgeCreated) {
-            new Notice("Bridge notes created (if any meaningful bridges were found).");
-            return;
+            if (!activeNote) {
+                new Notice("Active note not found in notes array.");
+                return;
+            }
+
+            let {clusters, shallowNotes, shallowLinks} = await this.getClusters(depth, file);
+
+            this.clusters = clusters;
+            this.shallowNotes = shallowNotes;
+            this.shallowLinks = shallowLinks;
+
+            console.log(`clusters found: ${clusters.length}`);
+            console.log(`shallowNotes found: ${shallowNotes.length}`);
+            console.log(`shallowLinks found: ${shallowLinks.length}`);
+
+            const topicsSearched : string[] = [];
+            this.latestFile = activeNote
+
+            try {
+                this.viewer?.drawGraph(shallowNotes, shallowLinks);
+            } catch (error) {
+            }
+            const seenClusters: string[] = [];
+            if (clusters.length < 1) return;
+            let bridgeCreated = false; // Add this before the for loops
+
+            for (let i = 0; i < clusters.length; i++) {
+                for (let j = i + 1; j < clusters.length; j++) {
+                    if (seenClusters.includes(clusters[i].toString()) && seenClusters.includes(clusters[j].toString())) {
+                        continue;
+                    }
+                    const clusterA = clusters[i].map(id => this.notes.find(n => n.id === id)?.title).filter(Boolean).join(', ');
+                    const clusterB = clusters[j].map(id => this.notes.find(n => n.id === id)?.title).filter(Boolean).join(', ');
+                    seenClusters.push(clusterA, clusterB);
+                    // Pick representative notes from each cluster (first note in each cluster)
+                    const repB = this.notes.find(n => n.id === clusters[j][0]);
+                    const repA = this.notes.find(n => n.id === clusters[i][0]);
+
+                    if (clusterA.length < 1 || clusterB.length < 1 || !repA || !repB) {
+                        new Notice(`Empty cluster found, skipping. {clusterA: ${clusterA}, clusterB: ${clusterB}}`);
+                        continue;
+                    }
+                    if (topicsSearched.includes(clusterA) && topicsSearched.includes(clusterB)) {
+                        continue;
+                    }
+
+                    topicsSearched.push(clusterA, clusterB);
+                    const prompt = `Given the topics: [${clusterA}] and [${clusterB}], suggest the two (and two maximum) most relevant topics, or entity that could serve as a bridge between these two clusters.
+                                Return ONLY the bridge topic and the wikipedia article url in a json array object with e.g {title:'title', link: 'link'}.
+                                If no meaningful bridge exists, reply with [] try it in english or portuguese.`;
+                    // const prompt = `Given the topics: [${clusterA}] and [${clusterB}], suggest the three (and only three) most relevant topics, or entity that could serve as a bridge between these two clusters.
+                    //             Return ONLY the bridge topic and the article url in a json array object with e.g {title:'title', link: 'link'}.
+                    //             If no meaningful bridge exists, reply with [] try it in english or portuguese.`;
+
+                    const response = (await this.llmClient.generateContent(prompt)).replace(/\\n/g, ' ').replace(/```json/g, "").replace(/```/g, '');
+                    let bridgeList = await this.viewer.parseBridgeResponse(response, repA, repB);
+                    try {
+                        bridgeList.forEach(bridgeNote => {
+                            if (runToken !== this.currentRunToken) {
+                                this.hideLoading();
+                                return;
+                            }
+                            this.viewer.addNodesAndLinks(
+                                [bridgeNote],
+                                [[bridgeNote.id, repA.id], [bridgeNote.id, repB.id]]
+                            );
+                        });
+                        bridgeCreated = true; // Set flag if a bridge is created
+                    } catch (error) {
+                        setTimeout(async() => {
+                            await this.run(activeNote.file, 1);
+                        }, 500)
+                    }
+                    console.log(`$clusters found: ${clusterA}, ${clusterB}`);
+                }
+            }
+
+            // After the loops, show the notice only if a bridge was created and clusters are valid
+            if (clusters.length > 1 && bridgeCreated) {
+                new Notice("Bridge notes created (if any meaningful bridges were found).");
+                return;
+            }
+            new Notice("No clusters found or only one cluster present.");
+        } finally {
+            this.hideLoading();
         }
-        new Notice("No clusters found or only one cluster present.");
     }
 
     private buildLinks(notes: Note[]): string[][] {
@@ -605,5 +619,39 @@ export default class KGGapFiller extends Plugin {
         } catch {
             return {};
         }
+    }
+
+    private showLoading(message: string = "Loading...") {
+        const container = document.getElementById('graph-container');
+        if (!container) return;
+        let loading = container.querySelector('#graph-loading');
+        if (!loading) {
+            loading = document.createElement('div');
+            loading.id = 'graph-loading';
+            loading.setAttribute('style', `
+                position: absolute;
+                top: 40%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                background: var(--background-secondary, #fff);
+                color: var(--text-normal, #333);
+                padding: 16px 32px;
+                border-radius: 8px;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+                z-index: 1000;
+                font-size: 1.2em;
+                text-align: center;
+            `);
+            container.appendChild(loading);
+        }
+        loading.textContent = message;
+        loading.classList.remove('hidden');
+    }
+
+    private hideLoading() {
+        const container = document.getElementById('graph-container');
+        if (!container) return;
+        const loading = container.querySelector('#graph-loading');
+        if (loading) loading.classList.add('hidden');
     }
 }

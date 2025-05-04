@@ -1,6 +1,6 @@
 // src/main.ts
 
-import { GraphAnalyser } from './graphAnalyser';
+import { GraphAnalyser, sourceTargetPairs } from './graphAnalyser';
 import { GapDetector } from './gapDetector';
 import { LLMClient } from './lmmClient';
 import { GraphViewer } from './graphViewer';
@@ -18,6 +18,11 @@ export default class KGGapFiller extends Plugin {
     private viewer!: GraphViewer;
     private embeddingsCache: Record<string, number[]> = {};
     private latestFile?: Note;
+    private notes: Note[] = [];
+
+    public clusters: string[][] = [];
+    public shallowNotes: Note[] = [];
+    public shallowLinks: string[][] = [];
 
     // Helper: robustly get the last active Markdown file
     private getCurrentMarkdownFile(app: App): TFile | null {
@@ -33,10 +38,7 @@ export default class KGGapFiller extends Plugin {
         this.analyser = new GraphAnalyser();
         this.detector = new GapDetector();
         this.llmClient = new LLMClient('http://localhost:1234/v1/chat/completions');
-
-
         await this.loadSettings();
-
 
         this.addRibbonIcon('dot-network', 'Show D3 Graph', async () => {
             // Remove any previous container from the DOM (cleanup)
@@ -88,34 +90,6 @@ export default class KGGapFiller extends Plugin {
     }
 
 
-
-    private similarityThresholdElement(graphContainer: HTMLElement) {
-        const container = document.createElement('div');
-        container.innerHTML = `
-  <div style="position: absolute; top: 10px; left: 10px; display: flex; align-items: center; gap: 8px;">
-    <label style="font-size: 14px;">Threshold:</label>
-    <input type="number"
-           min="0.1"
-           max="1.0"
-           step="0.01"
-           value="${this.settings?.similarityThreshold ?? 0.75}"
-           style="width: 60px; padding: 4px; border-radius: 4px; border: 1px solid var(--background-modifier-border);">
-  </div>
-`;
-
-        const numericInput = container.querySelector('input') as HTMLInputElement;
-
-        numericInput.addEventListener('change', async (e) => {
-            const value = parseFloat((e.target as HTMLInputElement).value);
-            if (!isNaN(value)) {
-                this.settings.similarityThreshold = Math.max(0.1, Math.min(1.0, value));
-                numericInput.value = this.settings.similarityThreshold.toFixed(2);
-                this.latestFile = undefined;
-                await this.ensureSingleRightPaneAndRun();
-            }
-        });
-        graphContainer.appendChild(container);
-    }
     private async openNote(file: TFile) {
         // Check if we have access to the Obsidian app
         try{
@@ -255,10 +229,35 @@ export default class KGGapFiller extends Plugin {
                 </div>
             </div>
 
+            <!-- Textarea and submit button at the bottom -->
+            <div id="graph-textarea-container" style="margin-top: 12px; display: flex; gap: 8px; align-items: flex-end;">
+                <textarea id="graph-textarea" rows="2" style="flex:1; resize: vertical; border-radius: 4px; border: 1px solid #ccc; padding: 6px;" placeholder="Type your message..."></textarea>
+                <button id="graph-submit-btn" style="padding: 6px 16px; border-radius: 4px; border: none; background: var(--interactive-accent); color: white; font-weight: bold;">Submit</button>
+            </div>
             <!-- Graph container -->
             <div id="d3-graph-container" style="height: calc(100% - 120px);"></div>
         </div>
     `;
+
+
+
+        const textarea = container.querySelector<HTMLTextAreaElement>('#graph-textarea');
+        const submitBtn = container.querySelector<HTMLButtonElement>('#graph-submit-btn');
+
+        const submitHandler = async() => {
+            const value = textarea?.value.trim();
+            if (textarea) textarea.value = '';
+            await this.ask(value ?? "");
+        };
+
+        submitBtn?.addEventListener('click', submitHandler);
+
+        textarea?.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                submitHandler();
+            }
+        });
 
         this.viewer = new GraphViewer(container, this.settings);
 
@@ -276,17 +275,96 @@ export default class KGGapFiller extends Plugin {
         });
 
 
-        this.similarityThresholdElement(container);
-
         return container;
     }
 
-    private async getClusters( notes: Note[], depth: number, file: TFile): Promise<{ clusters: string[][], shallowNotes: Note[], shallowLinks: string[][] }> {
+    private async ask(question: string)  {
+        if (!question || question.trim() === "") {
+            return "";
+        }
+        const actualNote = await this.getCurrentMarkdownFile(this.app);
+        let prompt = ''
+        if (!actualNote) {
+            prompt = `Given the topics: ${question} suggest most relevant topics, or entity that could serve as an answer.
+                                For connecting purposes in the response show how the topics are related to each other using a source, target structure. Source and target must have its titles as ids.
+                                Return ONLY the three most relevant topics and the wikipedia article url in a json array object with e.g {title:'title', link: 'link', source:'source', target:'target'}.
+                                If no meaningful topics exists, reply with [] try it in english or portuguese.`;
+        }else{
+            const topics = sourceTargetPairs(this.shallowLinks, this.shallowNotes).map(pair => [pair.source.title, pair.target.title]).flat();
+            const topicsNoDup = [...new Set(topics)].join(', ');
+            prompt = `Given the topics: ${question} suggest most relevant topics, or entity that could serve as an answer.
+                                                    For connecting purposes in the response show how the topics are related to each other using a source, target structure. Source and target must have its titles as ids.
+                                                    Try to use these topics as source as much as possible: ${topicsNoDup}.
+                                                    Return ONLY the three most relevant topics and the wikipedia article url in a json array object with e.g {title:'title', link: 'link', source:'source', target:'target'}.
+                                                    If no meaningful topics exists, reply with [] try it in english or portuguese.`;
+        }
+        const response = await this.llmClient.generateContent(prompt);
+        let bridgeList = await this.viewer.suggestionsResponse(response);
+        try {
+            // Helper function to check if two notes are connected
+            const areNotesConnected = (a: Note, b: Note) =>
+                a.id === b.id ||
+            a.links.includes(b.id) ||
+            b.links.includes(a.id) ||
+            (b.links[0] && (a.id === b.links[0] || a.links.includes(b.links[0]))) ||
+            (b.links[1] && (a.id === b.links[1] || a.links.includes(b.links[1])));
+
+            // Get all notes connected to the bridgeList
+            let possibleNewNotes = this.notes.filter(n =>
+                bridgeList.some(b => areNotesConnected(n, b))
+            );
+
+            // Expand to notes connected to the connected notes
+            possibleNewNotes = this.notes.filter(n =>
+                possibleNewNotes.some(b => areNotesConnected(n, b))
+            );
+
+            // Merge and deduplicate notes
+            const merged = Array.from(new Map(
+                [...possibleNewNotes, ...bridgeList]
+                .sort((a, b) => {
+                    const aIsLinked = possibleNewNotes.some(n => n.links.includes(a.id));
+                    const bIsLinked = possibleNewNotes.some(n => n.links.includes(b.id));
+
+                    if (aIsLinked !== bIsLinked) {
+                        return aIsLinked ? -1 : 1;
+                    }
+
+                    // Secondary sort by link length
+                    const lengthDiff = a.links.length - b.links.length;
+                    if (lengthDiff !== 0) {
+                        return lengthDiff;
+                    }
+
+                    // Tertiary sort by title
+                    return a.title.localeCompare(b.title);
+                })
+                .map(note => [note.id, note])
+            ).values());
+
+            // Add nodes and links to viewer
+            merged.forEach(bridgeNote => {
+                this.viewer.addNodesAndLinks(
+                    [bridgeNote],
+                    [
+                        [bridgeNote.title, bridgeNote.links[0]],
+                        [bridgeNote.id, bridgeNote.links[1]]
+                    ]
+                );
+            });
+        } catch (error) {
+            console.error("Error adding nodes and links:", error);
+        }
+        new Notice("Bridge notes created (if any meaningful bridges were found).");
+    }
+
+    private async getClusters( depth: number, file: TFile): Promise<{ clusters: string[][], shallowNotes: Note[], shallowLinks: string[][] }> {
         if (this.settings.useEmbeddings) {
             // Use embeddings to build connections
             this.embeddingsCache = await this.loadEmbeddingsFromFile();
             // Find the active note
-            const activeNote = notes.find(n => n.file && file && n.file.path === file.path);
+            const activeNote = this.notes.find(n => n.file && file && n.file.path === file.path);
+
             if (!activeNote) {
                 new Notice("Active note not found in notes array.");
                 return {"clusters": [], "shallowNotes": [], "shallowLinks": []};
@@ -299,7 +377,7 @@ export default class KGGapFiller extends Plugin {
                 for (const id of currentLevel) {
                     const embA = this.embeddingsCache[id];
                     if (!embA) continue;
-                    for (const n of notes) {
+                    for (const n of this.notes) {
                         if (allIncluded.has(n.id)) continue;
                         const embB = this.embeddingsCache[n.id];
                         if (!embB) continue;
@@ -312,7 +390,7 @@ export default class KGGapFiller extends Plugin {
                 nextLevel.forEach(id => allIncluded.add(id));
                 currentLevel = nextLevel;
             }
-            let shallowNotes = notes.filter(n => allIncluded.has(n.id));
+            let shallowNotes = this.notes.filter(n => allIncluded.has(n.id));
             let shallowLinks = [];
             for (const a of shallowNotes) {
                 for (const b of shallowNotes) {
@@ -333,48 +411,48 @@ export default class KGGapFiller extends Plugin {
             }
         }
 
-    // Use concrete links with depth limitation
-    const activeNote = notes.find(n => n.file && file && n.file.path === file.path);
-    if (!activeNote) {
-        new Notice("Active note not found in notes array.");
-        return { clusters: [], shallowNotes: [], shallowLinks: [] };
-    }
-
-    // Depth-limited traversal
-    let currentLevel = new Set<string>([activeNote.id]);
-    let allIncluded = new Set<string>([activeNote.id]);
-
-    for (let d = 0; d < depth; d++) {
-        const nextLevel = new Set<string>();
-        for (const id of currentLevel) {
-            const node = notes.find(n => n.id === id);
-            if (!node) continue;
-
-            // Outgoing links
-            node.links.forEach(l => {
-                if (!allIncluded.has(l)) nextLevel.add(l);
-            });
-
-            // Incoming links (if needed)
-            notes.forEach(n => {
-                if (n.links.includes(node.id) && !allIncluded.has(n.id)) {
-                    nextLevel.add(n.id);
-                }
-            });
+        // Use concrete links with depth limitation
+        const activeNote = this.notes.find(n => n.file && file && n.file.path === file.path);
+        if (!activeNote) {
+            new Notice("Active note not found in notes array.");
+            return { clusters: [], shallowNotes: [], shallowLinks: [] };
         }
 
-        nextLevel.forEach(id => allIncluded.add(id));
-        currentLevel = nextLevel;
-    }
+        // Depth-limited traversal
+        let currentLevel = new Set<string>([activeNote.id]);
+        let allIncluded = new Set<string>([activeNote.id]);
 
-    // Only analyze notes within depth limit
-    const shallowNotes = notes.filter(n => allIncluded.has(n.id));
+        for (let d = 0; d < depth; d++) {
+            const nextLevel = new Set<string>();
+            for (const id of currentLevel) {
+                const node = this.notes.find(n => n.id === id);
+                if (!node) continue;
 
-    return {
-        clusters: this.detector.findClustersFromSubgraph(shallowNotes),
-        shallowNotes: shallowNotes,
-        shallowLinks: this.buildLinks(shallowNotes)
-    };
+                // Outgoing links
+                node.links.forEach(l => {
+                    if (!allIncluded.has(l)) nextLevel.add(l);
+                });
+
+                // Incoming links (if needed)
+                this.notes.forEach(n => {
+                    if (n.links.includes(node.id) && !allIncluded.has(n.id)) {
+                        nextLevel.add(n.id);
+                    }
+                });
+            }
+
+            nextLevel.forEach(id => allIncluded.add(id));
+            currentLevel = nextLevel;
+        }
+
+        // Only analyze notes within depth limit
+        const shallowNotes = this.notes.filter(n => allIncluded.has(n.id));
+
+        return {
+            clusters: this.detector.findClustersFromSubgraph(shallowNotes),
+            shallowNotes: shallowNotes,
+            shallowLinks: this.buildLinks(shallowNotes)
+        };
     }
 
     public async run(file: TFile | null, depth: number = 1): Promise<void> {
@@ -388,13 +466,11 @@ export default class KGGapFiller extends Plugin {
                 id: file.basename,
                 title: file.basename,
                 file: file,
-                content,
                 links: this.analyser['extractLinks'](content)
             });
         }
-
-        const activeNote = notes.find(n => n.file && file && n.file.path === file.path);
-
+        this.notes = notes;
+        const activeNote = this.notes.find(n => n.file && file && n.file.path === file.path);
         if (this.latestFile && this.latestFile.id === activeNote?.id) return;
 
         if (!activeNote) {
@@ -402,9 +478,11 @@ export default class KGGapFiller extends Plugin {
             return;
         }
 
-        let {clusters, shallowNotes, shallowLinks} = await this.getClusters( notes, depth, file);
+        let {clusters, shallowNotes, shallowLinks} = await this.getClusters(depth, file);
 
-
+        this.clusters = clusters;
+        this.shallowNotes = shallowNotes;
+        this.shallowLinks = shallowLinks;
 
         console.log(`clusters found: ${clusters.length}`);
         console.log(`shallowNotes found: ${shallowNotes.length}`);
@@ -426,12 +504,12 @@ export default class KGGapFiller extends Plugin {
                 if (seenClusters.includes(clusters[i].toString()) && seenClusters.includes(clusters[j].toString())) {
                     continue;
                 }
-                const clusterA = clusters[i].map(id => notes.find(n => n.id === id)?.title).filter(Boolean).join(', ');
-                const clusterB = clusters[j].map(id => notes.find(n => n.id === id)?.title).filter(Boolean).join(', ');
+                const clusterA = clusters[i].map(id => this.notes.find(n => n.id === id)?.title).filter(Boolean).join(', ');
+                const clusterB = clusters[j].map(id => this.notes.find(n => n.id === id)?.title).filter(Boolean).join(', ');
                 seenClusters.push(clusterA, clusterB);
                 // Pick representative notes from each cluster (first note in each cluster)
-                const repA = notes.find(n => n.id === clusters[i][0]);
-                const repB = notes.find(n => n.id === clusters[j][0]);
+                const repB = this.notes.find(n => n.id === clusters[j][0]);
+                const repA = this.notes.find(n => n.id === clusters[i][0]);
 
                 if (clusterA.length < 1 || clusterB.length < 1 || !repA || !repB) {
                     new Notice(`Empty cluster found, skipping. {clusterA: ${clusterA}, clusterB: ${clusterB}}`);
@@ -449,42 +527,18 @@ export default class KGGapFiller extends Plugin {
                 //             Return ONLY the bridge topic and the article url in a json array object with e.g {title:'title', link: 'link'}.
                 //             If no meaningful bridge exists, reply with [] try it in english or portuguese.`;
 
-                let bridge = (await this.llmClient.generateContent(prompt)).replace(/\\n/g, ' ').replace(/```json/g, "").replace(/```/g, '');
-                let bridgeObject = [];
+                const response = (await this.llmClient.generateContent(prompt)).replace(/\\n/g, ' ').replace(/```json/g, "").replace(/```/g, '');
+                let bridgeList = await this.viewer.parseBridgeResponse(response, repA, repB);
                 try {
-                    bridgeObject = JSON.parse(bridge);
+                    bridgeList.forEach(bridgeNote => (this.viewer.addNodesAndLinks(
+                        [bridgeNote],
+                        [[bridgeNote.id, repA.id], [bridgeNote.id, repB.id]]
+                    )));
+                    bridgeCreated = true; // Set flag if a bridge is created
                 } catch (error) {
-                    continue;
-                }
-                if (bridgeObject.length === 0) {
-                    continue;
-                }
-                for(const b of bridgeObject){
-                    if (!b || !b.title ||  !b.link) {
-                        continue;
-                    }
-                    b.link = `https://${b.link.split("//")[1]}`;
-                    const bridgeNote: Note = {
-                        id: b?.title,
-                        title: b?.title.replace(/\*\*Bridge Topic:\*\*/g, ' ').replace(/Bridge Topic:/g, ' ').replace(/Bridge topic:/g, " ").replace(/\*/g,''),
-                        file: repA.file, // Use repA's file as a placeholder
-                        content: "",
-                        links: [repA.title, repB.title].filter(Boolean),
-                        isBridge: true,
-                        wikiUrl: b.link,
-                        summary: ""
-                    };
-                    try {
-                        this.viewer.addNodesAndLinks(
-                            [bridgeNote],
-                            [[bridgeNote.id, repA.id], [bridgeNote.id, repB.id]]
-                        );
-                        bridgeCreated = true; // Set flag if a bridge is created
-                    } catch (error) {
-                        setTimeout(async() => {
-                            await this.run(activeNote.file, 1);
-                        }, 500)
-                    }
+                    setTimeout(async() => {
+                        await this.run(activeNote.file, 1);
+                    }, 500)
                 }
                 console.log(`$clusters found: ${clusterA}, ${clusterB}`);
             }

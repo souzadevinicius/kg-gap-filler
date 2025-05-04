@@ -26,34 +26,34 @@ export class LLMClient {
 
   public async generateContent(prompt: string): Promise<string> {
     try {
-        console.log("LLM prompt:", prompt);
-        const response = await fetch(this.apiUrl, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                // Add if needed: 'Authorization': `Bearer ${API_KEY}`
-            },
-            body: JSON.stringify({
-                model: "phi-4", // MUST match loaded model
-                // model: "mistral-nemo-instruct-2407", // MUST match loaded model
-                messages: [{ role: "user", content: prompt }],
-                temperature: 0.2
-            })
-        });
+      console.log("LLM prompt:", prompt);
+      const response = await fetch(this.apiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          // Add if needed: 'Authorization': `Bearer ${API_KEY}`
+        },
+        body: JSON.stringify({
+          model: "phi-4", // MUST match loaded model
+          // model: "mistral-nemo-instruct-2407", // MUST match loaded model
+          messages: [{ role: "user", content: prompt }],
+          temperature: 0.2
+        })
+      });
 
-        if (!response.ok) {
-            const errorBody = await response.text();
-            throw new Error(`HTTP error! status: ${response.status}, body: ${errorBody}`);
-        }
-        const data = await response.json();
-        return data.choices[0].message.content;
+      if (!response.ok) {
+        const errorBody = await response.text();
+        throw new Error(`HTTP error! status: ${response.status}, body: ${errorBody}`);
+      }
+      const data = await response.json();
+      return data.choices[0].message.content;
     } catch (error) {
-        console.error("LLM Error:", error);
-        return "Error generating content";
+      console.error("LLM Error:", error);
+      return "Error generating content";
     }
-}
+  }
 
   async fillGap(generatedContent: string, vault: Vault, noteFile: TFile, oldContent:string): Promise<void> {
-      await vault.modify(noteFile, `${oldContent}\n${generatedContent}` );
+    await vault.modify(noteFile, `${oldContent}\n${generatedContent}` );
   }
 }

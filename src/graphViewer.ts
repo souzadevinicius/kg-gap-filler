@@ -1,6 +1,6 @@
 // graphAnalyser.ts (fixed version)
 import * as d3 from 'd3';
-import { Note } from './graphAnalyser';
+import { Note, sourceTargetPairs } from './graphAnalyser';
 import { GapFillerSettings } from './settings';
 import { App } from 'obsidian/obsidian';
 
@@ -123,14 +123,7 @@ export class GraphViewer {
 
       // Update current state
       this.currentNodes = [...notes];
-      this.currentLinks = links.map(link => {
-        const source = notes.find(n => n.id === link[0]);
-        const target = notes.find(n => n.id === link[1]);
-        if (!source || !target) {
-          throw new Error(`Could not find source or target for link ${link}`);
-        }
-        return { source, target };
-      });
+      this.currentLinks = sourceTargetPairs(links, notes);
       // Create new simulation
       this.simulation = d3.forceSimulation<Note>(notes)
       .force("link", d3.forceLink<Note, D3Link>(this.currentLinks)
@@ -537,11 +530,66 @@ export class GraphViewer {
     this.height = container.offsetHeight || 600;
   }
 
+  public async parseBridgeResponse(response: string, noteA: Note, noteB: Note): Promise<Note[]> {
+    const bridgeList = sanitiseResponse(response);
+    for(const bridgeObj of bridgeList){
+      if (!bridgeObj || !bridgeObj.title ||  !bridgeObj.link) {
+        continue;
+      }
+      bridgeObj.link = `https://${bridgeObj.link.split("//")[1]}`;
+      const bridgeNote: Note = {
+        id: bridgeObj?.title,
+        title: bridgeObj?.title.replace(/\*\*Bridge Topic:\*\*/g, ' ').replace(/Bridge Topic:/g, ' ').replace(/Bridge topic:/g, " ").replace(/\*/g,''),
+        file: noteA.file, // Use repA's file as a placeholder
+        content: "",
+        links: [noteA.title, noteB.title].filter(Boolean),
+        isBridge: true,
+        wikiUrl: bridgeObj.link,
+        summary: ""
+      };
+      bridgeList.push(bridgeNote);
+    }
+    return bridgeList
+  }
 
-
+  public async suggestionsResponse(response: string): Promise<Note[]> {
+    const sanitisedResp = sanitiseResponse(response);
+    const bridgeList = [];
+    for(const bridgeObj of sanitisedResp){
+      if (!bridgeObj || !bridgeObj.title ||  !bridgeObj.link) {
+        continue;
+      }
+      bridgeObj.link = `https://${bridgeObj.link.split("//")[1]}`;
+      const bridgeNote: Note = {
+        id: bridgeObj?.title,
+        title: bridgeObj?.title.replace(/\*\*Bridge Topic:\*\*/g, ' ').replace(/Bridge Topic:/g, ' ').replace(/Bridge topic:/g, " ").replace(/\*/g,''),
+        file: bridgeObj.file, // Use repA's file as a placeholder
+        content: "",
+        links: [bridgeObj.source, bridgeObj.target].filter(Boolean),
+        isBridge: true,
+        wikiUrl: bridgeObj.link,
+        summary: ""
+      };
+      bridgeList.push(bridgeNote);
+    }
+    return bridgeList
+  }
 }
 
-// Place these functions outside the class body
+
+function sanitiseResponse(response: string): any[] {
+  const bridge = response.replace(/\\n/g, ' ').replace(/```json/g, "").split('```')[0]
+  let bridgeList = [];
+  try {
+    bridgeList = JSON.parse(bridge);
+  }catch (error) {
+    console.error("Error parsing bridge response:", error);
+  }
+  finally{
+    return bridgeList
+  }
+}
+
 
 function showWikiModal(title: string, url: string) {
   // Reuse existing modal if available

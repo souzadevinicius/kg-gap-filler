@@ -602,29 +602,43 @@ export default class KGGapFiller extends Plugin {
             this.hideLoading();
         }
     }
+    private async askLLMUsingCluster(
+        clusterA: string,
+        clusterB: string,
+        repA: Note,
+        repB: Note,
+        clusterID: any
+    ) {
+        // Improved prompt: strict, clear, and prevents hallucination
+        const prompt = `
+      Given the JSON array provided in the web context, output a JSON array of objects in the exact format:
+      [{"title": "...", "link": "..."}, ...]
+      Use only the information from the web context. Do not invent or add data. Return only the JSON array, with no extra text or formatting.
+      for the title value, summarise in max 3 words what is in text content and replace the title property using its summary`;
 
-    private async askLLMUsingCluster(clusterA: string, clusterB: string, repA: Note, repB: Note, clusterID: any) {
-        const prompt = `Given the topics: [${clusterA}] and [${clusterB}], suggest the two (and two maximum) most relevant topics, or entity that could serve as a bridge between these two clusters.
-                                    Return ONLY the bridge topic and the wikipedia article url in a json array object with e.g {title:'title', link: 'link'}.
-                                    If no meaningful bridge exists, reply with [] try it in english or portuguese.`;
-        // const prompt = `Given the topics: [${clusterA}] and [${clusterB}], suggest the three (and only three) most relevant topics, or entity that could serve as a bridge between these two clusters.
-        //             Return ONLY the bridge topic and the article url in a json array object with e.g {title:'title', link: 'link'}.
-        //             If no meaningful bridge exists, reply with [] try it in english or portuguese.`;
+        // Call the LLM with context
+        const responseRaw = await this.llmClient.generateContentWithContext(
+            prompt,
+            [clusterA, clusterB].join('+')
+        );
 
-        const response = (await this.llmClient.generateContent(prompt)).replace(/\\n/g, ' ').replace(/```json/g, "").replace(/```/g, '');
-        const bridgeList = await this.viewer.parseBridgeResponse(response, repA, repB);
-        const bridgeListMinified = JSON.stringify(bridgeList); // Minified JSON
-        const cacheFPath = path.join(this.cachePath, `${clusterID}.json`)
+        // Clean and extract JSON from LLM response
+        let response = responseRaw
+            .replace(/```json/g, "")
+            .replace(/\\n/g, ' ').replace(/```json/g, "").split('```')[0];
 
+        // Validate and parse JSON
+        let bridgeList: any[] = [];
         try {
-            // Write the file
+            bridgeList = await this.viewer.parseBridgeResponse(response, repA, repB);
+            const bridgeListMinified = JSON.stringify(bridgeList); // Minified JSON
+            const cacheFPath = path.join(this.cachePath, `${clusterID}.json`)
             await this.app.vault.adapter.write(cacheFPath, bridgeListMinified);
+            return bridgeList;
         } catch (error) {
-            console.error(`Failed to write file to ${cacheFPath}:`, error);
+            console.error(error);
         }
-        return bridgeList;
     }
-
     private buildLinks(notes: Note[]): string[][] {
         const noteIds = new Set(notes.map(n => n.id));
         const links: string[][] = [];

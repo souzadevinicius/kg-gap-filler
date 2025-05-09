@@ -37,7 +37,7 @@ export class LLMClient {
           model: "phi-4", // MUST match loaded model
           // model: "mistral-nemo-instruct-2407", // MUST match loaded model
           messages: [{ role: "user", content: prompt }],
-          temperature: 0.2
+          temperature: 0
         })
       });
 
@@ -53,7 +53,7 @@ export class LLMClient {
     }
   }
 
-  async fillGap(generatedContent: string, vault: Vault, noteFile: TFile, oldContent:string): Promise<void> {
-    await vault.modify(noteFile, `${oldContent}\n${generatedContent}` );
+  async fillGap(generatedContent: string, vault: Vault, noteFile: TFile, oldContent: string): Promise<void> {
+    await vault.modify(noteFile, `${oldContent}\n${generatedContent}`);
   }
 }

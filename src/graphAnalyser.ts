@@ -1,6 +1,5 @@
 // import * as fs from 'fs';
 // import * as path from 'path';
-import { TFile } from 'obsidian';
 export interface Note extends d3.SimulationNodeDatum {
   /**
   * Node’s zero-based index into nodes array. This property is set during the initialization process of a simulation.
@@ -33,7 +32,7 @@ export interface Note extends d3.SimulationNodeDatum {
   title: string;
   content?: string;
   links: string[];
-  file:  TFile,
+  filePath: string,
   isBridge?: boolean;
   wikiUrl?: string;
   summary?: string;

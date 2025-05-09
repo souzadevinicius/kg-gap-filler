@@ -2,7 +2,7 @@
 import * as d3 from 'd3';
 import { Note, sourceTargetPairs } from './graphAnalyser';
 import { GapFillerSettings } from './settings';
-import { App } from 'obsidian/obsidian';
+import { TFile } from 'obsidian';
 
 
 let wikiModal: {
@@ -26,7 +26,7 @@ export class GraphViewer {
   private currentLinks: D3Link[] = [];
   private nodeFilter: string = '';
   private settings: GapFillerSettings;
-  private clickCallback: CallableFunction = () => {};
+  private clickCallback: CallableFunction = () => { };
 
   constructor(container: HTMLElement | null = null, settings?: GapFillerSettings) {
     this.container = container;
@@ -43,9 +43,6 @@ export class GraphViewer {
     this.width = container.offsetWidth || 800;
     this.height = container.offsetHeight || 600;
 
-
-
-
     // Initialize empty SVG
     this.resetSvg();
   }
@@ -61,24 +58,24 @@ export class GraphViewer {
 
     // Create new SVG
     const svg = d3.select(this.container)
-    .append('svg')
-    .attr('width', '100%')
-    .attr('height', '100%')
-    .attr('viewBox', `0 0 ${this.width} ${this.height}`)
-    .style('display', 'block');
+      .append('svg')
+      .attr('width', '100%')
+      .attr('height', '100%')
+      .attr('viewBox', `0 0 ${this.width} ${this.height}`)
+      .style('display', 'block');
 
     // Add arrowhead marker definition
     svg.append("defs").append("marker")
-    .attr("id", "arrowhead")
-    .attr("viewBox", "0 -5 10 10")
-    .attr("refX", 32)
-    .attr("refY", 0)
-    .attr("markerWidth", 8)
-    .attr("markerHeight", 8)
-    .attr("orient", "auto")
-    .append("path")
-    .attr("d", "M0,-5L10,0L0,5")
-    .attr("fill", "#888");
+      .attr("id", "arrowhead")
+      .attr("viewBox", "0 -5 10 10")
+      .attr("refX", 32)
+      .attr("refY", 0)
+      .attr("markerWidth", 8)
+      .attr("markerHeight", 8)
+      .attr("orient", "auto")
+      .append("path")
+      .attr("d", "M0,-5L10,0L0,5")
+      .attr("fill", "#888");
 
     const g = svg.append("g");
     this.svg = g;
@@ -86,10 +83,10 @@ export class GraphViewer {
     // Set up zoom behavior
     svg.call(
       d3.zoom<SVGSVGElement, unknown>()
-      .scaleExtent([0.1, 4])
-      .on("zoom", (event) => {
-        g.attr("transform", event.transform);
-      })
+        .scaleExtent([0.1, 4])
+        .on("zoom", (event) => {
+          g.attr("transform", event.transform);
+        })
     );
 
     svg.on("click", () => {
@@ -131,77 +128,77 @@ export class GraphViewer {
       const chargeStrength = -500 * (1 + nodeCount / 50); // Scale repulsion with node count
 
       this.simulation = d3.forceSimulation<Note>(notes)
-      .force("link", d3.forceLink<Note, D3Link>(this.currentLinks)
-      .id(d => d.id)
-      .distance(linkDistance))
-      .force("charge", d3.forceManyBody().strength(chargeStrength))
-      .force("center", d3.forceCenter(this.width / 2, this.height / 2))
-      .force("collide", d3.forceCollide(40 + nodeCount / 10)) // Increase collision radius with more nodes
-      .force("x", d3.forceX(this.width / 2).strength(0.05))
-      .force("y", d3.forceY(this.height / 2).strength(0.05))
-      .alphaDecay(0.02)
-      .on("tick", () => this.tick());
+        .force("link", d3.forceLink<Note, D3Link>(this.currentLinks)
+          .id(d => d.id)
+          .distance(linkDistance))
+        .force("charge", d3.forceManyBody().strength(chargeStrength))
+        .force("center", d3.forceCenter(this.width / 2, this.height / 2))
+        .force("collide", d3.forceCollide(40 + nodeCount / 10)) // Increase collision radius with more nodes
+        .force("x", d3.forceX(this.width / 2).strength(0.05))
+        .force("y", d3.forceY(this.height / 2).strength(0.05))
+        .alphaDecay(0.02)
+        .on("tick", () => this.tick());
 
 
       // Draw links
       if (this.svg) {
         this.svg.append("g")
-        .attr("class", "links")
-        .selectAll("line")
-        .data(this.currentLinks)
-        .enter()
-        .append("line")
-        .attr("stroke", "var(--text-muted)")
-        .attr("stroke-width", 1.5)
-        .attr("marker-end", "url(#arrowhead)");
+          .attr("class", "links")
+          .selectAll("line")
+          .data(this.currentLinks)
+          .enter()
+          .append("line")
+          .attr("stroke", "var(--text-muted)")
+          .attr("stroke-width", 1.5)
+          .attr("marker-end", "url(#arrowhead)");
       }
 
       // Draw nodes
       if (this.svg) {
         this.svg.append("g")
-        .attr("class", "nodes")
-        .selectAll("circle")
-        .data(notes)
-        .enter()
-        .append("circle")
-        .attr("r", 24)
-        .attr("fill", d => d.isBridge ? "#FFD700" : "var(--interactive-accent)")
-        .attr("stroke", "var(--background-primary)")
-        .attr("stroke-width", 2)
-        .attr("cursor", "grab")
-        .on("click", async(event, d) => {
-          if (d.isBridge && d.wikiUrl) {
-            // Open modal for bridge nodes
-            showWikiModal(d.title, d.wikiUrl);
-            event.stopPropagation();
-          } else if (d.id) {
-            // Open note for regular nodes
-            await this.clickCallback(d.file);
-            event.stopPropagation();
-          }
-        })
-        .call(
-          d3.drag<SVGCircleElement, Note>()
-          .on("start", this.dragStarted.bind(this))
-          .on("drag", this.dragged.bind(this))
-          .on("end", this.dragEnded.bind(this))
-        );
+          .attr("class", "nodes")
+          .selectAll("circle")
+          .data(notes)
+          .enter()
+          .append("circle")
+          .attr("r", 24)
+          .attr("fill", d => d.isBridge ? "#FFD700" : "var(--interactive-accent)")
+          .attr("stroke", "var(--background-primary)")
+          .attr("stroke-width", 2)
+          .attr("cursor", "grab")
+          .on("click", async (event, d) => {
+            if (d.isBridge && d.wikiUrl) {
+              // Open modal for bridge nodes
+              showWikiModal(d.title, d.wikiUrl);
+              event.stopPropagation();
+            } else if (d.id) {
+              // Open note for regular nodes
+              await this.clickCallback(d.filePath);
+              event.stopPropagation();
+            }
+          })
+          .call(
+            d3.drag<SVGCircleElement, Note>()
+              .on("start", this.dragStarted.bind(this))
+              .on("drag", this.dragged.bind(this))
+              .on("end", this.dragEnded.bind(this))
+          );
       }
 
 
       // Draw labels
       if (this.svg) {
         this.svg.append("g")
-        .attr("class", "labels")
-        .selectAll("text")
-        .data(notes)
-        .enter()
-        .append("text")
-        .text(d => d.title)
-        .attr("font-size", "14px")
-        .attr("fill", "var(--text-normal)")
-        .attr("dx", 28)
-        .attr("dy", "0.35em");
+          .attr("class", "labels")
+          .selectAll("text")
+          .data(notes)
+          .enter()
+          .append("text")
+          .text(d => d.title)
+          .attr("font-size", "14px")
+          .attr("fill", "var(--text-normal)")
+          .attr("dx", 28)
+          .attr("dy", "0.35em");
       }
       this.updateForces({
         linkDistance: this.settings.linkDistance,
@@ -236,12 +233,12 @@ export class GraphViewer {
       let updatedLinks = [
         ...this.currentLinks,
         ...newLinks
-        .map(link => {
-          const source = updatedNodes.find(n => n.id === link[0]);
-          const target = updatedNodes.find(n => n.id === link[1]);
-          return source && target ? { source, target } : null;
-        })
-        .filter(link => link !== null) as D3Link[]
+          .map(link => {
+            const source = updatedNodes.find(n => n.id === link[0]);
+            const target = updatedNodes.find(n => n.id === link[1]);
+            return source && target ? { source, target } : null;
+          })
+          .filter(link => link !== null) as D3Link[]
       ];
 
       // --- Improved: Avoid dangling nodes ---
@@ -257,11 +254,10 @@ export class GraphViewer {
 
       this.currentNodes = updatedNodes;
       this.currentLinks = updatedLinks;
-      console.log("currentNodes", this.currentNodes);
       // Update simulation
       this.simulation.nodes(updatedNodes);
       (this.simulation.force("link") as d3.ForceLink<Note, D3Link>)
-      .links(updatedLinks);
+        .links(updatedLinks);
 
       this.updateVisualization(updatedNodes, updatedLinks);
       this.simulation.alpha(1).restart();
@@ -304,15 +300,15 @@ export class GraphViewer {
     if (!this.svg) return;
 
     const linkSelection1 = this.svg.select("g.links")
-    .selectAll<SVGLineElement, D3Link>("line")
-    .data(links, (d: any) => `${d.source.id}-${d.target.id}`);
+      .selectAll<SVGLineElement, D3Link>("line")
+      .data(links, (d: any) => `${d.source.id}-${d.target.id}`);
 
     linkSelection1.enter()
-    .append("line")
-    .merge(linkSelection1)
-    .attr("stroke", "var(--text-muted)")
-    .attr("stroke-width", 1.5)
-    .attr("marker-end", "url(#arrowhead)");
+      .append("line")
+      .merge(linkSelection1)
+      .attr("stroke", "var(--text-muted)")
+      .attr("stroke-width", 1.5)
+      .attr("marker-end", "url(#arrowhead)");
 
     linkSelection1.exit().remove();
 
@@ -322,69 +318,69 @@ export class GraphViewer {
 
     // Update nodes
     const nodeSelection = this.svg.select("g.nodes")
-    .selectAll<SVGCircleElement, Note>("circle")
-    .data(nodes, (d: any) => d.id);
+      .selectAll<SVGCircleElement, Note>("circle")
+      .data(nodes, (d: any) => d.id);
 
     const enteredNodes = nodeSelection.enter()
-    .append("circle")
-    .attr("r", 24)
-    .attr("fill", d => d.isBridge ? "#FFD700" : "var(--interactive-accent)")
-    .attr("stroke", "var(--background-primary)")
-    .attr("stroke-width", 2)
-    .attr("cursor", "grab")
-    .on("click", async(event, d) => {
-      if (d.isBridge && d.wikiUrl) {
-        showWikiModal(d.title, d.wikiUrl);
-        event.stopPropagation();
-      } else if (d.id) {
-        await this.clickCallback(d.file);
-        event.stopPropagation();
-      }
-    })
-    .call(
-      d3.drag<SVGCircleElement, Note>()
-      .on("start", this.dragStarted.bind(this))
-      .on("drag", this.dragged.bind(this))
-      .on("end", this.dragEnded.bind(this))
-    );
+      .append("circle")
+      .attr("r", 24)
+      .attr("fill", d => d.isBridge ? "#FFD700" : "var(--interactive-accent)")
+      .attr("stroke", "var(--background-primary)")
+      .attr("stroke-width", 2)
+      .attr("cursor", "grab")
+      .on("click", async (event, d) => {
+        if (d.isBridge && d.wikiUrl) {
+          showWikiModal(d.title, d.wikiUrl);
+          event.stopPropagation();
+        } else if (d.id) {
+          await this.clickCallback(d.filePath);
+          event.stopPropagation();
+        }
+      })
+      .call(
+        d3.drag<SVGCircleElement, Note>()
+          .on("start", this.dragStarted.bind(this))
+          .on("drag", this.dragged.bind(this))
+          .on("end", this.dragEnded.bind(this))
+      );
 
     // Set initial opacity based on filter
     nodeSelection.merge(enteredNodes)
-    .attr("opacity", d => matches(d) ? 1 : 0.2);
+      .attr("opacity", d => matches(d) ? 1 : 0.2);
 
     nodeSelection.exit().remove();
 
     // Update labels
     const labelSelection = this.svg.select("g.labels")
-    .selectAll<SVGTextElement, Note>("text")
-    .data(nodes, (d: any) => d.id);
+      .selectAll<SVGTextElement, Note>("text")
+      .data(nodes, (d: any) => d.id);
 
     labelSelection.enter()
-    .append("text")
-    .merge(labelSelection)
-    .text(d => d.title)
-    .attr("font-size", "14px")
-    .attr("fill", "var(--text-normal)")
-    .attr("dx", 28)
-    .attr("dy", "0.35em")
-    .attr("opacity", d => matches(d) ? 1 : 0.2);
+      .append("text")
+      .merge(labelSelection)
+      .text(d => d.title)
+      .attr("font-size", "14px")
+      .attr("fill", "var(--text-normal)")
+      .attr("dx", 28)
+      .attr("dy", "0.35em")
+      .attr("opacity", d => matches(d) ? 1 : 0.2);
 
     labelSelection.exit().remove();
 
     // Update links: fade if either node doesn't match
     const linkSelection2 = this.svg.select("g.links")
-    .selectAll<SVGLineElement, D3Link>("line")
-    .data(links, (d: any) => `${d.source.id}-${d.target.id}`);
+      .selectAll<SVGLineElement, D3Link>("line")
+      .data(links, (d: any) => `${d.source.id}-${d.target.id}`);
 
     linkSelection2.enter()
-    .append("line")
-    .merge(linkSelection2)
-    .attr("stroke", "var(--text-muted)")
-    .attr("stroke-width", 1.5)
-    .attr("marker-end", "url(#arrowhead)")
-    .attr("opacity", d =>
-      matches(d.source as Note) || matches(d.target as Note) ? 1 : 0.2
-    );
+      .append("line")
+      .merge(linkSelection2)
+      .attr("stroke", "var(--text-muted)")
+      .attr("stroke-width", 1.5)
+      .attr("marker-end", "url(#arrowhead)")
+      .attr("opacity", d =>
+        matches(d.source as Note) || matches(d.target as Note) ? 1 : 0.2
+      );
 
     linkSelection2.exit().remove();
 
@@ -392,56 +388,56 @@ export class GraphViewer {
     // Add hover effect to nodes after (re)creating them
     if (this.svg) {
       this.svg.select("g.nodes")
-      .selectAll<SVGCircleElement, Note>("circle")
-      .on("mouseover", (event, hoveredNode) => {
-        // Get connected nodes and links
-        const { nodeIds, links: connectedLinks } = this.getConnectedElements(hoveredNode);
+        .selectAll<SVGCircleElement, Note>("circle")
+        .on("mouseover", (event, hoveredNode) => {
+          // Get connected nodes and links
+          const { nodeIds, links: connectedLinks } = this.getConnectedElements(hoveredNode);
 
-        // Fade out non-connected elements
-        if (!this.svg) return;
+          // Fade out non-connected elements
+          if (!this.svg) return;
 
-        // Nodes - always highlight hovered and connected nodes regardless of filter
-        this.svg.selectAll<SVGCircleElement, Note>("g.nodes circle")
-        .attr("opacity", d =>
-          d.id === hoveredNode.id || nodeIds.has(d.id) ? 1 : 0.1
-        );
+          // Nodes - always highlight hovered and connected nodes regardless of filter
+          this.svg.selectAll<SVGCircleElement, Note>("g.nodes circle")
+            .attr("opacity", d =>
+              d.id === hoveredNode.id || nodeIds.has(d.id) ? 1 : 0.1
+            );
 
-        // Labels - always highlight hovered and connected labels regardless of filter
-        this.svg.selectAll<SVGTextElement, Note>("g.labels text")
-        .attr("opacity", d =>
-          d.id === hoveredNode.id || nodeIds.has(d.id) ? 1 : 0.1
-        );
+          // Labels - always highlight hovered and connected labels regardless of filter
+          this.svg.selectAll<SVGTextElement, Note>("g.labels text")
+            .attr("opacity", d =>
+              d.id === hoveredNode.id || nodeIds.has(d.id) ? 1 : 0.1
+            );
 
-        // Links - always highlight connected links regardless of filter
-        this.svg.selectAll<SVGLineElement, D3Link>("g.links line")
-        .attr("opacity", d => {
-          const sourceId = (d.source as Note).id;
-          const targetId = (d.target as Note).id;
-          return (
-            sourceId === hoveredNode.id ||
-            targetId === hoveredNode.id ||
-            connectedLinks.some(l =>
-              (l.source as Note).id === sourceId &&
-              (l.target as Note).id === targetId
-            )
-          ) ? 1 : 0.1;
+          // Links - always highlight connected links regardless of filter
+          this.svg.selectAll<SVGLineElement, D3Link>("g.links line")
+            .attr("opacity", d => {
+              const sourceId = (d.source as Note).id;
+              const targetId = (d.target as Note).id;
+              return (
+                sourceId === hoveredNode.id ||
+                targetId === hoveredNode.id ||
+                connectedLinks.some(l =>
+                  (l.source as Note).id === sourceId &&
+                  (l.target as Note).id === targetId
+                )
+              ) ? 1 : 0.1;
+            });
+        })
+        .on("mouseout", () => {
+          // Restore opacity based on filter (if any)
+          if (!this.svg) return;
+          const filter = this.nodeFilter;
+          const matches = (d: Note) => !filter || d.title.toLowerCase().includes(filter);
+
+          this.svg.selectAll<SVGCircleElement, Note>("g.nodes circle")
+            .attr("opacity", d => matches(d) ? 1 : 0.2);
+          this.svg.selectAll<SVGTextElement, Note>("g.labels text")
+            .attr("opacity", d => matches(d) ? 1 : 0.2);
+          this.svg.selectAll<SVGLineElement, D3Link>("g.links line")
+            .attr("opacity", d =>
+              matches(d.source as Note) || matches(d.target as Note) ? 1 : 0.2
+            );
         });
-      })
-      .on("mouseout", () => {
-        // Restore opacity based on filter (if any)
-        if (!this.svg) return;
-        const filter = this.nodeFilter;
-        const matches = (d: Note) => !filter || d.title.toLowerCase().includes(filter);
-
-        this.svg.selectAll<SVGCircleElement, Note>("g.nodes circle")
-        .attr("opacity", d => matches(d) ? 1 : 0.2);
-        this.svg.selectAll<SVGTextElement, Note>("g.labels text")
-        .attr("opacity", d => matches(d) ? 1 : 0.2);
-        this.svg.selectAll<SVGLineElement, D3Link>("g.links line")
-        .attr("opacity", d =>
-          matches(d.source as Note) || matches(d.target as Note) ? 1 : 0.2
-        );
-      });
     }
   }
 
@@ -458,7 +454,6 @@ export class GraphViewer {
     this.settings.linkStrength = linkStrength || 1;
     this.settings.chargeStrength = chargeStrength || -400;
     this.settings.centerStrength = centerStrength || 1;
-    console.log("Updating forces with settings:", this.settings);
     (this.simulation.force("link") as d3.ForceLink<Note, D3Link>).distance(this.settings.linkDistance);
     (this.simulation.force("link") as d3.ForceLink<Note, D3Link>).strength(this.settings.linkStrength);
     (this.simulation.force("charge") as d3.ForceManyBody<Note>).strength(this.settings.chargeStrength);
@@ -488,20 +483,20 @@ export class GraphViewer {
 
       // Update nodes
       this.svg.selectAll<SVGCircleElement, Note>("g.nodes circle")
-      .attr("cx", d => d.x || 0)
-      .attr("cy", d => d.y || 0);
+        .attr("cx", d => d.x || 0)
+        .attr("cy", d => d.y || 0);
 
       // Update labels
       this.svg.selectAll<SVGTextElement, Note>("g.labels text")
-      .attr("x", d => d.x || 0)
-      .attr("y", d => d.y || 0);
+        .attr("x", d => d.x || 0)
+        .attr("y", d => d.y || 0);
 
       // Update links
       this.svg.selectAll<SVGLineElement, D3Link>("g.links line")
-      .attr("x1", d => (d.source as Note).x || 0)
-      .attr("y1", d => (d.source as Note).y || 0)
-      .attr("x2", d => (d.target as Note).x || 0)
-      .attr("y2", d => (d.target as Note).y || 0);
+        .attr("x1", d => (d.source as Note).x || 0)
+        .attr("y1", d => (d.source as Note).y || 0)
+        .attr("x2", d => (d.target as Note).x || 0)
+        .attr("y2", d => (d.target as Note).y || 0);
     } catch (error) {
       console.error("Error in GraphViewer.tick:", error);
       this.destroy();
@@ -534,8 +529,8 @@ export class GraphViewer {
 
     if (this.simulation) {
       (this.simulation.force("center") as d3.ForceCenter<Note>)
-      .x(this.width / 2)
-      .y(this.height / 2);
+        .x(this.width / 2)
+        .y(this.height / 2);
       this.simulation.alpha(1).restart();
     }
   }
@@ -553,15 +548,16 @@ export class GraphViewer {
 
   public async parseBridgeResponse(response: string, noteA: Note, noteB: Note): Promise<Note[]> {
     const bridgeList = sanitiseResponse(response);
-    for(const bridgeObj of bridgeList){
-      if (!bridgeObj || !bridgeObj.title ||  !bridgeObj.link) {
+    for (const bridgeObj of bridgeList) {
+      if (!bridgeObj || !bridgeObj.title || !bridgeObj.link) {
         continue;
       }
+
       bridgeObj.link = `https://${bridgeObj.link.split("//")[1]}`;
       const bridgeNote: Note = {
         id: bridgeObj?.title,
-        title: bridgeObj?.title.replace(/\*\*Bridge Topic:\*\*/g, ' ').replace(/Bridge Topic:/g, ' ').replace(/Bridge topic:/g, " ").replace(/\*/g,''),
-        file: noteA.file, // Use repA's file as a placeholder
+        title: bridgeObj?.title.replace(/\*\*Bridge Topic:\*\*/g, ' ').replace(/Bridge Topic:/g, ' ').replace(/Bridge topic:/g, " ").replace(/\*/g, ''),
+        filePath: noteA.filePath,
         content: "",
         links: [noteA.title, noteB.title].filter(Boolean),
         isBridge: true,
@@ -576,15 +572,15 @@ export class GraphViewer {
   public async suggestionsResponse(response: string): Promise<Note[]> {
     const sanitisedResp = sanitiseResponse(response);
     const bridgeList = [];
-    for(const bridgeObj of sanitisedResp){
-      if (!bridgeObj || !bridgeObj.title ||  !bridgeObj.link) {
+    for (const bridgeObj of sanitisedResp) {
+      if (!bridgeObj || !bridgeObj.title || !bridgeObj.link) {
         continue;
       }
       bridgeObj.link = `https://${bridgeObj.link.split("//")[1]}`;
       const bridgeNote: Note = {
         id: bridgeObj?.title,
-        title: bridgeObj?.title.replace(/\*\*Bridge Topic:\*\*/g, ' ').replace(/Bridge Topic:/g, ' ').replace(/Bridge topic:/g, " ").replace(/\*/g,''),
-        file: bridgeObj.file, // Use repA's file as a placeholder
+        title: bridgeObj?.title.replace(/\*\*Bridge Topic:\*\*/g, ' ').replace(/Bridge Topic:/g, ' ').replace(/Bridge topic:/g, " ").replace(/\*/g, ''),
+        filePath: bridgeObj.filePath, // Use repA's file as a placeholder
         content: "",
         links: [bridgeObj.source, bridgeObj.target].filter(Boolean),
         isBridge: true,
@@ -603,10 +599,10 @@ function sanitiseResponse(response: string): any[] {
   let bridgeList = [];
   try {
     bridgeList = JSON.parse(bridge);
-  }catch (error) {
-    console.error("Error parsing bridge response:", error);
+  } catch (error) {
+    // console.error("Error parsing bridge response:", error);
   }
-  finally{
+  finally {
     return bridgeList
   }
 }

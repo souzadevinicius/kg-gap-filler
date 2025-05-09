@@ -97,34 +97,34 @@ export class GapDetector {
     }
   }
 
-  public async clusterByEmbeddings(notes: Note[], llmClient: LLMClient, threshold = 0.5): Promise<string[][]> {
-    // 1. Get embeddings for all notes
-    const embeddings: { [id: string]: number[] } = {};
-    for (const note of notes) {
-      embeddings[note.id] = await llmClient.getEmbedding(note.content);
-    }
+  // public async clusterByEmbeddings(notes: Note[], llmClient: LLMClient, threshold = 0.5): Promise<string[][]> {
+  //   // 1. Get embeddings for all notes
+  //   const embeddings: { [id: string]: number[] } = {};
+  //   for (const note of notes) {
+  //     embeddings[note.id] = await llmClient.getEmbedding(note.content);
+  //   }
 
-    // 2. Agglomerative clustering (simple, not optimal for large N)
-    const clusters: string[][] = [];
-    const assigned = new Set<string>();
+  //   // 2. Agglomerative clustering (simple, not optimal for large N)
+  //   const clusters: string[][] = [];
+  //   const assigned = new Set<string>();
 
-    for (const note of notes) {
-      if (assigned.has(note.id)) continue;
-      const cluster = [note.id];
-      assigned.add(note.id);
+  //   for (const note of notes) {
+  //     if (assigned.has(note.id)) continue;
+  //     const cluster = [note.id];
+  //     assigned.add(note.id);
 
-      for (const other of notes) {
-        if (note.id === other.id || assigned.has(other.id)) continue;
-        const sim = this.cosineSimilarity(embeddings[note.id], embeddings[other.id]);
-        if (sim >= threshold) {
-          cluster.push(other.id);
-          assigned.add(other.id);
-        }
-      }
-      clusters.push(cluster);
-    }
-    return clusters;
-  }
+  //     for (const other of notes) {
+  //       if (note.id === other.id || assigned.has(other.id)) continue;
+  //       const sim = this.cosineSimilarity(embeddings[note.id], embeddings[other.id]);
+  //       if (sim >= threshold) {
+  //         cluster.push(other.id);
+  //         assigned.add(other.id);
+  //       }
+  //     }
+  //     clusters.push(cluster);
+  //   }
+  //   return clusters;
+  // }
 
   public clusterByEmbeddingsCache(notes: Note[], embeddingsCache: Record<string, number[]>, threshold = 0.75): string[][] {
     const clusters: string[][] = [];

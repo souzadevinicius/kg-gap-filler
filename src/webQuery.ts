@@ -9,9 +9,11 @@ export async function getWebContext(query: string): Promise<{ title: string, tex
     await page.setUserAgent(
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
     );
-    await page.goto(`https://bing.com/?q=${encodeURIComponent(query)}`, {
+    const link = `https://bing.com/?q=${encodeURIComponent(query)}`
+    await page.goto(link, {
         waitUntil: "domcontentloaded",
     });
+    console.log(query)
 
     await page.waitForSelector(".b_algo");
 

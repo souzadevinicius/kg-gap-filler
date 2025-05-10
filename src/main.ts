@@ -543,9 +543,9 @@ export default class KGGapFiller extends Plugin {
                     if (seenClusters.includes(clusters[i].toString()) && seenClusters.includes(clusters[j].toString())) {
                         continue;
                     }
-                    const clusterA = clusters[i].map(id => this.notes.find(n => n.id === id)?.title).filter(Boolean).join(', ');
-                    const clusterB = clusters[j].map(id => this.notes.find(n => n.id === id)?.title).filter(Boolean).join(', ');
-                    seenClusters.push(clusterA, clusterB);
+                    const clusterA = clusters[i].map(id => this.notes.find(n => n.id === id)?.title).filter(Boolean);
+                    const clusterB = clusters[j].map(id => this.notes.find(n => n.id === id)?.title).filter(Boolean);
+                    seenClusters.push(clusterA.join(','), clusterB.join(','));
 
 
                     // Pick representative notes from each cluster (first note in each cluster)
@@ -556,19 +556,25 @@ export default class KGGapFiller extends Plugin {
                         new Notice(`Empty cluster found, skipping. {clusterA: ${clusterA}, clusterB: ${clusterB}}`);
                         continue;
                     }
-                    if (topicsSearched.includes(clusterA) && topicsSearched.includes(clusterB)) {
+                    if (topicsSearched.includes(clusterA.join(',')) && topicsSearched.includes(clusterB.join(','))) {
                         continue;
                     }
                     let bridgeList = [];
 
-                    const clusterID = this.generateClusterID(clusterA, clusterB);
+                    const clusterID = this.generateClusterID(clusterA.join(','), clusterB.join(','));
                     bridgeList = await this.getSuggestionFromClusterID(clusterID);
 
                     if (bridgeList === null) {
-                        bridgeList = await this.askLLMUsingCluster(clusterA, clusterB, repA, repB, clusterID);
+                        bridgeList = await this.askLLMUsingCluster(
+                            clusterA.filter((item): item is string => item !== undefined),
+                            clusterB.filter((item): item is string => item !== undefined),
+                            repA,
+                            repB,
+                            clusterID
+                        );
 
                     }
-                    topicsSearched.push(clusterA, clusterB);
+                    topicsSearched.push(clusterA.join(','), clusterB.join(','));
                     try {
                         bridgeList.forEach((bridgeNote: Note) => {
                             if (runToken !== this.currentRunToken) {
@@ -603,8 +609,8 @@ export default class KGGapFiller extends Plugin {
         }
     }
     private async askLLMUsingCluster(
-        clusterA: string,
-        clusterB: string,
+        clusterA: string[],
+        clusterB: string[],
         repA: Note,
         repB: Note,
         clusterID: any
@@ -617,28 +623,33 @@ export default class KGGapFiller extends Plugin {
       for the title value, summarise in max 3 words what is in text content and replace the title property using its summary`;
 
         // Call the LLM with context
-        const responseRaw = await this.llmClient.generateContentWithContext(
-            prompt,
-            [clusterA, clusterB].join('+')
-        );
-
-        // Clean and extract JSON from LLM response
-        let response = responseRaw
-            .replace(/```json/g, "")
-            .replace(/\\n/g, ' ').replace(/```json/g, "").split('```')[0];
-
-        // Validate and parse JSON
+        const mergedClusters = clusterA.concat(clusterB);
+        const combinatorialClusters = this.combinations(mergedClusters, 2);
         let bridgeList: any[] = [];
-        try {
-            bridgeList = await this.viewer.parseBridgeResponse(response, repA, repB);
-            const bridgeListMinified = JSON.stringify(bridgeList); // Minified JSON
-            const cacheFPath = path.join(this.cachePath, `${clusterID}.json`)
-            await this.app.vault.adapter.write(cacheFPath, bridgeListMinified);
-            return bridgeList;
-        } catch (error) {
-            console.error(error);
+        for (const c of combinatorialClusters) {
+            const responseRaw = await this.llmClient.generateContentWithContext(
+                prompt,
+                [c[0], c[1]].join('+')
+            );
+
+            // Clean and extract JSON from LLM response
+            let response = responseRaw
+                .replace(/```json/g, "")
+                .replace(/\\n/g, ' ').replace(/```json/g, "").split('```')[0];
+            // Validate and parse JSON
+            try {
+                const b = await this.viewer.parseBridgeResponse(response, repA, repB);
+                const bridgeListMinified = JSON.stringify(b); // Minified JSON
+                const cacheFPath = path.join(this.cachePath, `${clusterID}.json`)
+                await this.app.vault.adapter.write(cacheFPath, bridgeListMinified);
+                bridgeList = bridgeList.concat(b);
+            } catch (error) {
+                console.error(error);
+            }
         }
+        return bridgeList
     }
+
     private buildLinks(notes: Note[]): string[][] {
         const noteIds = new Set(notes.map(n => n.id));
         const links: string[][] = [];
@@ -684,6 +695,19 @@ export default class KGGapFiller extends Plugin {
     private hideLoading() {
         const loading = document.getElementById('graph-loading');
         if (loading) loading.style.display = 'none';
+    }
+    private combinations<T>(arr: T[], k: number): T[][] {
+        if (k === 0) return [[]];
+        if (arr.length < k) return [];
+        const result: T[][] = [];
+        for (let i = 0; i <= arr.length - k; i++) {
+            const head = arr[i];
+            const tailCombos = this.combinations(arr.slice(i + 1), k - 1);
+            for (const tail of tailCombos) {
+                result.push([head, ...tail]);
+            }
+        }
+        return result;
     }
 }
 

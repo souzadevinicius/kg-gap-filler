@@ -18,7 +18,7 @@ export async function getWebContext(query: string): Promise<{ title: string, tex
     await page.waitForSelector(".b_algo");
 
     const results = await page.$$eval(".b_algo", (elements) =>
-        elements.slice(0, 3).map((el) => {
+        elements.slice(0, 10).map((el) => {
             // Extract the first anchor's href and text (title)
             const a = el.querySelector("a");
             const link = a ? a.href : "";
@@ -43,7 +43,7 @@ export async function getWebContext(query: string): Promise<{ title: string, tex
     );
 
     await browser.close();
-    return results.slice(0, 1);
+    return results.slice(0, 3);
 }
 
 

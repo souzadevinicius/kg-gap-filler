@@ -167,9 +167,9 @@ export class GraphViewer {
           .attr("stroke-width", 2)
           .attr("cursor", "grab")
           .on("click", async (event, d) => {
-            if (d.isBridge && d.wikiUrl) {
+            if (d.isBridge && d.linkURL) {
               // Open modal for bridge nodes
-              showWikiModal(d.title, d.wikiUrl);
+              showWikiModal(d.title, d.linkURL);
               event.stopPropagation();
             } else if (d.id) {
               // Open note for regular nodes
@@ -329,8 +329,8 @@ export class GraphViewer {
       .attr("stroke-width", 2)
       .attr("cursor", "grab")
       .on("click", async (event, d) => {
-        if (d.isBridge && d.wikiUrl) {
-          showWikiModal(d.title, d.wikiUrl);
+        if (d.isBridge && d.linkURL) {
+          showWikiModal(d.title, d.linkURL);
           event.stopPropagation();
         } else if (d.id) {
           await this.clickCallback(d.filePath);
@@ -546,7 +546,10 @@ export class GraphViewer {
     this.height = container.offsetHeight || 600;
   }
 
-  public async parseBridgeResponse(response: string, noteA: Note, noteB: Note): Promise<Note[]> {
+  public async parseBridgeResponse(response: string, noteA: Note | undefined, noteB: Note | undefined): Promise<Note[]> {
+    if (!noteA || !noteB){
+      return []
+    }
     const bridgeList = sanitiseResponse(response);
     for (const bridgeObj of bridgeList) {
       if (!bridgeObj || !bridgeObj.title || !bridgeObj.link) {
@@ -561,7 +564,7 @@ export class GraphViewer {
         content: "",
         links: [noteA.title, noteB.title].filter(Boolean),
         isBridge: true,
-        wikiUrl: bridgeObj.link,
+        linkURL: bridgeObj.link,
         summary: ""
       };
       bridgeList.push(bridgeNote);
@@ -584,7 +587,7 @@ export class GraphViewer {
         content: "",
         links: [bridgeObj.source, bridgeObj.target].filter(Boolean),
         isBridge: true,
-        wikiUrl: bridgeObj.link,
+        linkURL: bridgeObj.link,
         summary: ""
       };
       bridgeList.push(bridgeNote);

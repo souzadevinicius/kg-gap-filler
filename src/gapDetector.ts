@@ -1,6 +1,5 @@
 // src/gapDetector.ts
 import { Note } from './graphAnalyser';
-import { LLMClient } from './lmmClient';
 
 export class GapDetector {
   private graph: Map<string, Set<string>> = new Map();
@@ -154,9 +153,13 @@ export class GapDetector {
 
 
   public cosineSimilarity(a: number[], b: number[]): number {
-    const dot = a.reduce((sum, ai, i) => sum + ai * b[i], 0);
-    const normA = Math.sqrt(a.reduce((sum, ai) => sum + ai * ai, 0));
-    const normB = Math.sqrt(b.reduce((sum, bi) => sum + bi * bi, 0));
-    return dot / (normA * normB);
+    return cosineSimilarity(a, b);
   }
+}
+
+export function cosineSimilarity(a: number[], b: number[]): number {
+  const dot = a.reduce((sum, ai, i) => sum + ai * b[i], 0);
+  const normA = Math.sqrt(a.reduce((sum, ai) => sum + ai * ai, 0));
+  const normB = Math.sqrt(b.reduce((sum, bi) => sum + bi * bi, 0));
+  return dot / (normA * normB);
 }

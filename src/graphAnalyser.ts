@@ -34,7 +34,7 @@ export interface Note extends d3.SimulationNodeDatum {
   links: string[];
   filePath: string,
   isBridge?: boolean;
-  wikiUrl?: string;
+  linkURL?: string;
   summary?: string;
 }
 
